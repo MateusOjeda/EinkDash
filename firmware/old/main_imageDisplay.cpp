@@ -1,8 +1,9 @@
-
+/* eslint-disable */
 #include <Arduino.h>
 #include <SPI.h>
 #include <LittleFS.h>
 #include <GxEPD2_4G_4G.h>
+/* eslint-enable */
 
 #define IMAGE_WIDTH 800
 #define IMAGE_HEIGHT 480

@@ -1,4 +1,5 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
+import { File } from "expo-file-system";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -13,11 +14,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import HabitIconImage from "@/components/HabitIconImage";
-import {
-	convertHabitIcon,
-	pickHabitIconSource,
-	DitherMode,
-} from "../../lib/habit-icons";
+import { prepareHabitIconSource } from "../../lib/habit-icon-background";
+import { convertHabitIcon, DitherMode } from "../../lib/habit-icons";
 import {
 	deleteHabitWithHistory,
 	Habit,
@@ -125,14 +123,43 @@ export default function HabitCalendarScreen() {
 	async function chooseIcon() {
 		if (iconBusy) return;
 		try {
-			const uri = await pickHabitIconSource();
-			if (!uri) return;
+			// Seleciona diretamente um PNG no gerenciador de arquivos.
+			// Nao usa a galeria, crop nativo ou DocumentPicker.
+			const selection = await File.pickFileAsync({
+				mimeTypes: ["image/png"],
+				multipleFiles: false,
+			});
+			if (selection.canceled) return;
+
 			setIconBusy(true);
-			const icon = await convertHabitIcon(uri, ditherMode);
-			setIconSource(uri);
+			const selected = selection.result;
+			console.log(
+				"HABIT ICON: arquivo:",
+				selected.name,
+				"uri:",
+				selected.uri,
+			);
+
+			// O objeto File devolvido pelo seletor conserva o acesso
+			// ao documento, inclusive quando a URI usa content://.
+			// Nao tentar copiar novamente o arquivo selecionado.
+			const bytes = await selected.bytes();
+			console.log("HABIT ICON: bytes lidos:", bytes.length);
+
+			const preparedUri = await prepareHabitIconSource(
+				bytes,
+				selected.name,
+			);
+			const icon = await convertHabitIcon(preparedUri, ditherMode);
+			setIconSource(preparedUri);
 			setIconDraft(icon);
 		} catch (error) {
-			Alert.alert("Erro ao escolher imagem", String(error));
+			console.error("HABIT ICON: falha na selecao/leitura:", error);
+			Alert.alert(
+				"Erro ao escolher PNG",
+				String(error) +
+					"\n\nAbra o arquivo PNG original pela pasta Downloads/Arquivos, nao pela galeria de fotos.",
+			);
 		} finally {
 			setIconBusy(false);
 		}
@@ -390,8 +417,10 @@ export default function HabitCalendarScreen() {
 						<View style={styles.divider} />
 						<Text style={styles.editHeading}>Ícone do hábito</Text>
 						<Text style={styles.iconHelp}>
-							Escolha uma imagem, recorte em formato quadrado e
-							veja a prévia em 4 tons de cinza.
+							Escolha uma imagem. Ela será recortada ao centro em
+							formato quadrado e veja a prévia em 4 tons de cinza.
+							O fundo transparente vira cinza-claro; o branco
+							opaco é preservado.
 						</Text>
 						<View style={styles.iconEditorRow}>
 							<HabitIconImage

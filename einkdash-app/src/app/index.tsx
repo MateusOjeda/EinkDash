@@ -22,13 +22,6 @@ const sections: Section[] = [
 		color: "#7FCBA5",
 	},
 	{
-		id: "display",
-		title: "Display",
-		description: "Configurações do painel",
-		icon: "desktop-outline",
-		color: "#92B8ED",
-	},
-	{
 		id: "weather",
 		title: "Clima",
 		description: "Previsão do tempo",
@@ -68,10 +61,24 @@ export default function HomeScreen() {
 				showsVerticalScrollIndicator={false}
 			>
 				<View style={styles.header}>
-					<Text style={styles.title}>EinkDash</Text>
-					<Text style={styles.subtitle}>
-						Gerenciamento do painel e-ink
-					</Text>
+					<View>
+						<Text style={styles.title}>EinkDash</Text>
+						<Text style={styles.subtitle}>
+							Gerenciamento do painel e-ink
+						</Text>
+					</View>
+
+					<Pressable
+						onPress={() => router.push("/settings")}
+						style={styles.settingsButton}
+						hitSlop={12}
+					>
+						<Ionicons
+							name="settings-outline"
+							size={22}
+							color="#777A82"
+						/>
+					</Pressable>
 				</View>
 
 				<Text style={styles.sectionTitle}>Funcionalidades</Text>
@@ -139,6 +146,9 @@ const styles = StyleSheet.create({
 	},
 	header: {
 		marginBottom: 42,
+		flexDirection: "row",
+		justifyContent: "space-between",
+		alignItems: "flex-start",
 	},
 	title: {
 		color: "#FFFFFF",
@@ -201,5 +211,9 @@ const styles = StyleSheet.create({
 		position: "absolute",
 		right: 12,
 		bottom: 15,
+	},
+	settingsButton: {
+		padding: 8,
+		marginTop: -4,
 	},
 });
