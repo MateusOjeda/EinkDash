@@ -1,6 +1,5 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, onSnapshot } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
 	Alert,
@@ -13,23 +12,23 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import HabitIconImage from "../../components/HabitIconImage";
+import HabitIconImage from "@/components/HabitIconImage";
 import {
 	convertHabitIcon,
 	pickHabitIconSource,
 	DitherMode,
 } from "../../lib/habit-icons";
-import { db } from "@/firebase/config";
 import {
 	deleteHabitWithHistory,
 	Habit,
 	HabitIcon,
 	listenCompletedDays,
+	listenHabit,
 	localDateKey,
 	renameHabit,
 	toggleCompletedDay,
 	updateHabitIcon,
-} from "../../lib/habits";
+} from "@/firebase/habits";
 
 const WEEKDAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 const MONTHS = [
@@ -63,6 +62,7 @@ export default function HabitCalendarScreen() {
 	const [iconDraft, setIconDraft] = useState<HabitIcon | null>(null);
 	const [ditherMode, setDitherMode] = useState<DitherMode>("none");
 	const [iconBusy, setIconBusy] = useState(false);
+	const [showSettings, setShowSettings] = useState(false);
 
 	const firstKey = localDateKey(
 		new Date(month.getFullYear(), month.getMonth(), 1),
@@ -87,23 +87,11 @@ export default function HabitCalendarScreen() {
 
 	useEffect(() => {
 		if (!id) return;
-		return onSnapshot(
-			doc(db, "habits", id),
-			(snapshot) => {
-				if (!snapshot.exists()) {
-					setHabit(null);
-					return;
-				}
-				const data = snapshot.data();
-				const item: Habit = {
-					id: snapshot.id,
-					name: String(data.name ?? ""),
-					position:
-						typeof data.position === "number" ? data.position : 0,
-					icon: data.icon ?? null,
-				};
+		return listenHabit(
+			id,
+			(item) => {
 				setHabit(item);
-				setName(item.name);
+				if (item) setName(item.name);
 			},
 			(error) => Alert.alert("Erro ao carregar hábito", error.message),
 		);
@@ -257,209 +245,258 @@ export default function HabitCalendarScreen() {
 				<Text style={styles.headerTitle} numberOfLines={1}>
 					{habit?.name ?? "Hábito"}
 				</Text>
+				<Pressable
+					onPress={() => setShowSettings((prev) => !prev)}
+					style={{ padding: 8 }}
+					accessibilityLabel={
+						showSettings ? "Voltar ao calendário" : "Editar hábito"
+					}
+				>
+					<Ionicons
+						name={
+							showSettings
+								? "calendar-outline"
+								: "settings-outline"
+						}
+						size={24}
+						color="#C7C9CF"
+					/>
+				</Pressable>
 			</View>
-			<ScrollView contentContainerStyle={styles.content}>
-				<View style={styles.monthHeader}>
-					<Pressable
-						onPress={() => changeMonth(-1)}
-						style={styles.monthArrow}
-					>
-						<Ionicons
-							name="chevron-back"
-							size={25}
-							color="#FFFFFF"
-						/>
-					</Pressable>
-					<Text style={styles.monthTitle}>
-						{MONTHS[month.getMonth()]} de {month.getFullYear()}
-					</Text>
-					<Pressable
-						onPress={() => changeMonth(1)}
-						style={styles.monthArrow}
-					>
-						<Ionicons
-							name="chevron-forward"
-							size={25}
-							color="#FFFFFF"
-						/>
-					</Pressable>
-				</View>
-				<View style={styles.calendar}>
-					{WEEKDAYS.map((day) => (
-						<View key={day} style={styles.cellWrapper}>
-							<Text style={styles.weekday}>{day}</Text>
-						</View>
-					))}
-					{cells.map((day, index) => {
-						if (day === null)
-							return (
-								<View
-									key={`empty-${index}`}
-									style={styles.cellWrapper}
-								/>
-							);
-						const key = localDateKey(
-							new Date(
-								month.getFullYear(),
-								month.getMonth(),
-								day,
-							),
-						);
-						const done = doneDays.has(key);
-						const future = key > todayKey;
-						return (
+			<ScrollView
+				key={showSettings ? "settings" : "calendar"}
+				contentContainerStyle={styles.content}
+			>
+				{!showSettings && (
+					<>
+						<View style={styles.monthHeader}>
 							<Pressable
-								key={key}
-								disabled={future || pendingDay !== null}
-								onPress={() => toggle(key)}
-								accessibilityLabel={`${key}: ${done ? "realizado" : "não realizado"}`}
-								style={styles.cellWrapper}
+								onPress={() => changeMonth(-1)}
+								style={styles.monthArrow}
 							>
-								<View
-									style={[
-										styles.dayCell,
-										done && styles.completed,
-										key === todayKey && styles.today,
-									]}
-								>
-									{done ? (
-										<Ionicons
-											name="checkmark"
-											size={22}
-											color="#FFFFFF"
+								<Ionicons
+									name="chevron-back"
+									size={25}
+									color="#FFFFFF"
+								/>
+							</Pressable>
+							<Text style={styles.monthTitle}>
+								{MONTHS[month.getMonth()]} de{" "}
+								{month.getFullYear()}
+							</Text>
+							<Pressable
+								onPress={() => changeMonth(1)}
+								style={styles.monthArrow}
+							>
+								<Ionicons
+									name="chevron-forward"
+									size={25}
+									color="#FFFFFF"
+								/>
+							</Pressable>
+						</View>
+						<View style={styles.calendar}>
+							{WEEKDAYS.map((day) => (
+								<View key={day} style={styles.cellWrapper}>
+									<Text style={styles.weekday}>{day}</Text>
+								</View>
+							))}
+							{cells.map((day, index) => {
+								if (day === null)
+									return (
+										<View
+											key={`empty-${index}`}
+											style={styles.cellWrapper}
 										/>
-									) : (
-										<Text
+									);
+								const key = localDateKey(
+									new Date(
+										month.getFullYear(),
+										month.getMonth(),
+										day,
+									),
+								);
+								const done = doneDays.has(key);
+								const future = key > todayKey;
+								return (
+									<Pressable
+										key={key}
+										disabled={future || pendingDay !== null}
+										onPress={() => toggle(key)}
+										accessibilityLabel={`${key}: ${done ? "realizado" : "não realizado"}`}
+										style={styles.cellWrapper}
+									>
+										<View
 											style={[
-												styles.dayNumber,
-												future && styles.future,
+												styles.dayCell,
+												done && styles.completed,
+												key === todayKey &&
+													styles.today,
 											]}
 										>
-											{day}
-										</Text>
-									)}
-								</View>
-							</Pressable>
-						);
-					})}
-				</View>
-				<Text style={styles.hint}>
-					Toque em um dia para marcar ou desmarcar.
-				</Text>
-				<View style={styles.divider} />
-				<Text style={styles.editHeading}>Nome do hábito</Text>
-				<View style={styles.editRow}>
-					<TextInput
-						style={styles.input}
-						value={name}
-						onChangeText={setName}
-						maxLength={80}
-						placeholderTextColor="#888"
-					/>
-					<Pressable
-						onPress={saveName}
-						disabled={
-							saving || !name.trim() || name === habit?.name
-						}
-						style={[
-							styles.saveButton,
-							(saving ||
-								!name.trim() ||
-								name === habit?.name) && { opacity: 0.5 },
-						]}
-					>
-						<Text style={styles.saveText}>Salvar</Text>
-					</Pressable>
-				</View>
-				<View style={styles.divider} />
-				<Text style={styles.editHeading}>Ícone do hábito</Text>
-				<Text style={styles.iconHelp}>
-					Escolha uma imagem, recorte em formato quadrado e veja a
-					prévia em 4 tons de cinza.
-				</Text>
-				<View style={styles.iconEditorRow}>
-					<HabitIconImage
-						icon={iconDraft ?? habit?.icon}
-						size={112}
-					/>
-					<View style={styles.iconControls}>
-						<Pressable
-							onPress={chooseIcon}
-							disabled={iconBusy}
-							style={styles.chooseIconButton}
-						>
-							<Ionicons
-								name="images-outline"
-								size={19}
-								color="#FFFFFF"
-							/>
-							<Text style={styles.chooseIconLabel}>
-								Escolher imagem
-							</Text>
-						</Pressable>
-						<Text style={styles.iconHelp}>
-							48 × 48 px · 4 tons · 2 bpp
-						</Text>
-						{iconBusy && <ActivityIndicator color="#8DD3AD" />}
-					</View>
-				</View>
-				{iconSource && (
+											<Text
+												style={[
+													styles.dayNumber,
+													future &&
+														!done &&
+														styles.future,
+													done && {
+														color: "#FFFFFF",
+													},
+												]}
+											>
+												{day}
+											</Text>
+										</View>
+									</Pressable>
+								);
+							})}
+						</View>
+
+						<View style={styles.divider} />
+					</>
+				)}
+
+				{showSettings && (
 					<>
-						<Text style={styles.ditherLabel}>Conversão</Text>
-						<View style={styles.ditherRow}>
-							{[
-								{
-									value: "none" as DitherMode,
-									title: "Sem dithering",
-								},
-								{
-									value: "floyd-steinberg" as DitherMode,
-									title: "Floyd–Steinberg",
-								},
-							].map((option) => (
+						<Text style={styles.editHeading}>Nome do hábito</Text>
+						<View style={styles.editRow}>
+							<TextInput
+								style={styles.input}
+								value={name}
+								onChangeText={setName}
+								maxLength={80}
+								placeholderTextColor="#888"
+							/>
+							<Pressable
+								onPress={saveName}
+								disabled={
+									saving ||
+									!name.trim() ||
+									name === habit?.name
+								}
+								style={[
+									styles.saveButton,
+									(saving ||
+										!name.trim() ||
+										name === habit?.name) && {
+										opacity: 0.5,
+									},
+								]}
+							>
+								<Text style={styles.saveText}>Salvar</Text>
+							</Pressable>
+						</View>
+						<View style={styles.divider} />
+						<Text style={styles.editHeading}>Ícone do hábito</Text>
+						<Text style={styles.iconHelp}>
+							Escolha uma imagem, recorte em formato quadrado e
+							veja a prévia em 4 tons de cinza.
+						</Text>
+						<View style={styles.iconEditorRow}>
+							<HabitIconImage
+								icon={iconDraft ?? habit?.icon}
+								size={112}
+							/>
+							<View style={styles.iconControls}>
 								<Pressable
-									key={option.value}
-									onPress={() => changeDither(option.value)}
+									onPress={chooseIcon}
 									disabled={iconBusy}
-									style={[
-										styles.ditherOption,
-										ditherMode === option.value &&
-											styles.ditherSelected,
-									]}
+									style={styles.chooseIconButton}
 								>
-									<Text style={styles.ditherOptionText}>
-										{option.title}
+									<Ionicons
+										name="images-outline"
+										size={19}
+										color="#FFFFFF"
+									/>
+									<Text style={styles.chooseIconLabel}>
+										Escolher imagem
 									</Text>
 								</Pressable>
-							))}
+								<Text style={styles.iconHelp}>
+									48 × 48 px · 4 tons · 2 bpp
+								</Text>
+								{iconBusy && (
+									<ActivityIndicator color="#8DD3AD" />
+								)}
+							</View>
 						</View>
+						{iconSource && (
+							<>
+								<Text style={styles.ditherLabel}>
+									Conversão
+								</Text>
+								<View style={styles.ditherRow}>
+									{[
+										{
+											value: "none" as DitherMode,
+											title: "Sem dithering",
+										},
+										{
+											value: "floyd-steinberg" as DitherMode,
+											title: "Floyd–Steinberg",
+										},
+									].map((option) => (
+										<Pressable
+											key={option.value}
+											onPress={() =>
+												changeDither(option.value)
+											}
+											disabled={iconBusy}
+											style={[
+												styles.ditherOption,
+												ditherMode === option.value &&
+													styles.ditherSelected,
+											]}
+										>
+											<Text
+												style={styles.ditherOptionText}
+											>
+												{option.title}
+											</Text>
+										</Pressable>
+									))}
+								</View>
+								<Pressable
+									onPress={saveIcon}
+									disabled={iconBusy || !iconDraft}
+									style={[
+										styles.saveIconButton,
+										iconBusy && { opacity: 0.5 },
+									]}
+								>
+									<Text style={styles.saveText}>
+										Salvar ícone no Firebase
+									</Text>
+								</Pressable>
+							</>
+						)}
+						{habit?.icon && (
+							<Pressable
+								onPress={removeIcon}
+								disabled={iconBusy}
+								style={styles.removeIconButton}
+							>
+								<Text style={styles.removeIconText}>
+									Remover ícone
+								</Text>
+							</Pressable>
+						)}
 						<Pressable
-							onPress={saveIcon}
-							disabled={iconBusy || !iconDraft}
-							style={[
-								styles.saveIconButton,
-								iconBusy && { opacity: 0.5 },
-							]}
+							style={styles.deleteButton}
+							onPress={confirmDelete}
 						>
-							<Text style={styles.saveText}>
-								Salvar ícone no Firebase
+							<Ionicons
+								name="trash-outline"
+								size={18}
+								color="#E78E8E"
+							/>
+							<Text style={styles.deleteText}>
+								Excluir hábito
 							</Text>
 						</Pressable>
 					</>
 				)}
-				{habit?.icon && (
-					<Pressable
-						onPress={removeIcon}
-						disabled={iconBusy}
-						style={styles.removeIconButton}
-					>
-						<Text style={styles.removeIconText}>Remover ícone</Text>
-					</Pressable>
-				)}
-				<Pressable style={styles.deleteButton} onPress={confirmDelete}>
-					<Ionicons name="trash-outline" size={18} color="#E78E8E" />
-					<Text style={styles.deleteText}>Excluir hábito</Text>
-				</Pressable>
 			</ScrollView>
 		</SafeAreaView>
 	);
@@ -494,7 +531,7 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 6,
 	},
 	cellWrapper: {
-		width: "14.285714%",
+		width: "14.2%",
 		alignItems: "center",
 		justifyContent: "center",
 		marginVertical: 4,
@@ -507,8 +544,15 @@ const styles = StyleSheet.create({
 		alignItems: "center",
 		justifyContent: "center",
 	},
-	completed: { backgroundColor: "#378454" },
-	today: { borderWidth: 1, borderColor: "#96D5B0" },
+	completed: {
+		backgroundColor: "#378454",
+		borderRadius: 12,
+	},
+	today: {
+		borderWidth: 1,
+		borderColor: "#96D5B0",
+		borderRadius: 12,
+	},
 	dayNumber: { color: "#E7E7E9", fontSize: 15 },
 	future: { color: "#61636A" },
 	hint: {
