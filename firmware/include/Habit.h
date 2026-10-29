@@ -16,9 +16,14 @@ struct Habit {
 
   uint16_t iconWidth = 0;
   uint16_t iconHeight = 0;
-  std::vector<uint8_t> iconBytes;  // gray2bpp, sem Base64
+  std::vector<uint8_t> iconBytes;  // RAM somente se Flash externa indisponivel
+  uint32_t iconHash = 0;          // assinatura dos bytes + ID + dimensoes
+  int8_t iconFlashSlot = -1;      // 0..11; -1 = nao armazenado
+  int8_t iconFlashBank = -1;      // 0 ou 1; -1 = nao armazenado
 
-  bool hasIcon() const { return !iconBytes.empty(); }
+  bool hasIcon() const {
+    return !iconBytes.empty() || (iconFlashSlot >= 0 && iconFlashBank >= 0);
+  }
 };
 
 #endif

@@ -4,19 +4,24 @@
 #include <algorithm>
 #include <utility>
 #include <mbedtls/base64.h>
+#include <esp_heap_caps.h>
 
-void FirebaseManager::begin(const char* apiKey,
-                            const char* projectId,
-                            Stream& serial) {
+void FirebaseManager::begin(const char *apiKey,
+                            const char *projectId,
+                            Stream &serial)
+{
   _projectId = projectId;
   _serial = &serial;
   _config.api_key = apiKey;
 }
 
-bool FirebaseManager::awaitReady(uint32_t timeoutMs) {
+bool FirebaseManager::awaitReady(uint32_t timeoutMs)
+{
   const uint32_t startedAt = millis();
-  while (!Firebase.ready()) {
-    if (millis() - startedAt >= timeoutMs) {
+  while (!Firebase.ready())
+  {
+    if (millis() - startedAt >= timeoutMs)
+    {
       _serial->println("FIREBASE: timeout aguardando Firebase.ready().");
       return false;
     }
@@ -25,12 +30,14 @@ bool FirebaseManager::awaitReady(uint32_t timeoutMs) {
   return true;
 }
 
-bool FirebaseManager::createAnonymousSession(String& uid) {
+bool FirebaseManager::createAnonymousSession(String &uid)
+{
   uid = "";
   _serial->println("FIREBASE: criando sessao anonima...");
   Firebase.reconnectNetwork(true);
 
-  if (!Firebase.signUp(&_config, &_auth, "", "")) {
+  if (!Firebase.signUp(&_config, &_auth, "", ""))
+  {
     _serial->print("FIREBASE: falha no cadastro anonimo: ");
     _serial->println(_config.signer.signupError.message.c_str());
     return false;
@@ -38,21 +45,25 @@ bool FirebaseManager::createAnonymousSession(String& uid) {
 
   uid = _auth.token.uid.c_str();
   Firebase.begin(&_config, &_auth);
-  if (!awaitReady()) return false;
+  if (!awaitReady())
+    return false;
 
-  const char* refreshToken = Firebase.getRefreshToken();
-  if (!refreshToken || !strlen(refreshToken)) {
+  const char *refreshToken = Firebase.getRefreshToken();
+  if (!refreshToken || !strlen(refreshToken))
+  {
     _serial->println("FIREBASE: refresh token vazio.");
     return false;
   }
 
-  if (!_preferences.begin("firebase", false)) {
+  if (!_preferences.begin("firebase", false))
+  {
     _serial->println("FIREBASE: nao foi possivel abrir NVS.");
     return false;
   }
   const size_t saved = _preferences.putString("refreshToken", refreshToken);
   _preferences.end();
-  if (!saved) {
+  if (!saved)
+  {
     _serial->println("FIREBASE: falha ao salvar refresh token na NVS.");
     return false;
   }
@@ -60,15 +71,18 @@ bool FirebaseManager::createAnonymousSession(String& uid) {
   return true;
 }
 
-bool FirebaseManager::authenticate() {
-  if (!_preferences.begin("firebase", true)) {
+bool FirebaseManager::authenticate()
+{
+  if (!_preferences.begin("firebase", true))
+  {
     _serial->println("FIREBASE: nao foi possivel abrir NVS.");
     return false;
   }
   const String refreshToken = _preferences.getString("refreshToken", "");
   _preferences.end();
 
-  if (refreshToken.isEmpty()) {
+  if (refreshToken.isEmpty())
+  {
     _serial->println("FIREBASE: sessao ausente. Configure pelo app uma vez.");
     return false;
   }
@@ -76,7 +90,8 @@ bool FirebaseManager::authenticate() {
   Firebase.reconnectNetwork(true);
   Firebase.setIdToken(&_config, "", 3600, refreshToken.c_str());
   Firebase.begin(&_config, &_auth);
-  if (!awaitReady()) return false;
+  if (!awaitReady())
+    return false;
 
   _serial->println("FIREBASE: autenticado com refresh token da NVS.");
   return true;
@@ -84,9 +99,11 @@ bool FirebaseManager::authenticate() {
 
 // Converte o Base64 do aplicativo diretamente para bytes gray2bpp.
 // 48 x 48 -> 576 bytes; nao guarda a string Base64 depois de ler o documento.
-bool FirebaseManager::decodeIcon(const String& base64, Habit& habit) {
+bool FirebaseManager::decodeIcon(const String &base64, Habit &habit)
+{
   if (habit.iconWidth == 0 || habit.iconHeight == 0 ||
-      habit.iconWidth > 128 || habit.iconHeight > 128) {
+      habit.iconWidth > 128 || habit.iconHeight > 128)
+  {
     return false;
   }
 
@@ -98,21 +115,39 @@ bool FirebaseManager::decodeIcon(const String& base64, Habit& habit) {
 
   const int result = mbedtls_base64_decode(
       habit.iconBytes.data(), habit.iconBytes.size(), &decodedBytes,
-      reinterpret_cast<const unsigned char*>(base64.c_str()), base64.length());
+      reinterpret_cast<const unsigned char *>(base64.c_str()), base64.length());
 
-  if (result != 0 || decodedBytes != expectedBytes) {
+  if (result != 0 || decodedBytes != expectedBytes)
+  {
     habit.iconBytes.clear();
     habit.iconWidth = 0;
     habit.iconHeight = 0;
     return false;
   }
+  // A assinatura permite invalidar a imagem-base quando o icone muda,
+  // sem precisar guardar seus 576 bytes em RAM depois da sincronizacao.
+  uint32_t h = 2166136261UL;
+  auto hashBytes = [&h](const uint8_t *p, size_t n)
+  {
+    for (size_t i = 0; i < n; ++i)
+    {
+      h ^= p[i];
+      h *= 16777619UL;
+    }
+  };
+  hashBytes(reinterpret_cast<const uint8_t *>(habit.id.c_str()), habit.id.length());
+  hashBytes(reinterpret_cast<const uint8_t *>(&habit.iconWidth), sizeof(habit.iconWidth));
+  hashBytes(reinterpret_cast<const uint8_t *>(&habit.iconHeight), sizeof(habit.iconHeight));
+  hashBytes(habit.iconBytes.data(), habit.iconBytes.size());
+  habit.iconHash = h;
   return true;
 }
 
 // Consulta estruturada testada com sucesso: 1 documento por habito,
 // ordenado pelo campo "date" DESCENDING.
-bool FirebaseManager::readLastCompletionDate(const String& habitId,
-                                             String& outDate, String& outPrevious) {
+bool FirebaseManager::readLastCompletionDate(const String &habitId,
+                                             String &outDate, String &outPrevious)
+{
   outDate = "";
   outPrevious = "";
   String parentPath = "habits/";
@@ -127,7 +162,8 @@ bool FirebaseManager::readLastCompletionDate(const String& habitId,
   query.set("limit", 2);
 
   if (!Firebase.Firestore.runQuery(
-          &_fbdo, _projectId.c_str(), "", parentPath.c_str(), &query)) {
+          &_fbdo, _projectId.c_str(), "", parentPath.c_str(), &query))
+  {
     _serial->print("COMPLETIONS: erro no habito ");
     _serial->println(habitId);
     _serial->println(_fbdo.errorReason());
@@ -135,32 +171,42 @@ bool FirebaseManager::readLastCompletionDate(const String& habitId,
   }
 
   FirebaseJsonArray results;
-  if (!results.setJsonArrayData(_fbdo.payload())) {
+  if (!results.setJsonArrayData(_fbdo.payload()))
+  {
     _serial->println("COMPLETIONS: resposta inesperada.");
     return false;
   }
 
-  if (results.size() == 0) return true;
+  if (results.size() == 0)
+    return true;
 
   // Ultimas duas datas: se hoje for desmarcado, a tela recupera
   // imediatamente a conclusao anterior, mesmo sem acesso a rede.
-  for (int i = 0; i < 2 && i < static_cast<int>(results.size()); ++i) {
+  for (int i = 0; i < 2 && i < static_cast<int>(results.size()); ++i)
+  {
     FirebaseJsonData rowData;
-    if (!results.get(rowData, i)) return false;
+    if (!results.get(rowData, i))
+      return false;
     FirebaseJson row;
-    if (!rowData.getJSON(row)) return false;
+    if (!rowData.getJSON(row))
+      return false;
     FirebaseJsonData dateData;
-    if (!row.get(dateData, "document/fields/date/stringValue")) continue;
+    if (!row.get(dateData, "document/fields/date/stringValue"))
+      continue;
     const String dateValue = dateData.to<String>();
-    if (i == 0) outDate = dateValue;
-    else outPrevious = dateValue;
+    if (i == 0)
+      outDate = dateValue;
+    else
+      outPrevious = dateValue;
   }
 
   return true;
 }
 
-bool FirebaseManager::syncHabits() {
-  if (WiFi.status() != WL_CONNECTED) {
+bool FirebaseManager::syncHabits()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
     _serial->println("HABITS: sem conexao Wi-Fi.");
     return false;
   }
@@ -169,10 +215,12 @@ bool FirebaseManager::syncHabits() {
   std::vector<Habit> incoming;
   String pageToken;
 
-  do {
+  do
+  {
     if (!Firebase.Firestore.listDocuments(
             &_fbdo, _projectId.c_str(), "", "habits",
-            10, pageToken.c_str(), "", "", false)) {
+            10, pageToken.c_str(), "", "", false))
+    {
       _serial->print("HABITS: erro: ");
       _serial->println(_fbdo.errorReason());
       return false;
@@ -182,7 +230,8 @@ bool FirebaseManager::syncHabits() {
     // Escopo dedicado: libera JSON da listagem ANTES das consultas completions.
     {
       FirebaseJson response;
-      if (!response.setJsonData(_fbdo.payload())) {
+      if (!response.setJsonData(_fbdo.payload()))
+      {
         _serial->println("HABITS: resposta JSON invalida.");
         return false;
       }
@@ -191,22 +240,60 @@ bool FirebaseManager::syncHabits() {
       if (response.get(tokenData, "nextPageToken"))
         nextToken = tokenData.to<String>();
 
-      FirebaseJsonData docsData;
-      if (response.get(docsData, "documents")) {
-        FirebaseJsonArray docs;
-        if (!docsData.getArray(docs)) {
-          _serial->println("HABITS: documents invalido.");
-          return false;
+      // Nao materializar o array completo em FirebaseJsonArray: a resposta
+      // principal ja esta em 'response'. Duplicar todos os documentos
+      // (incluindo icones Base64) pode causar mais um pico de RAM.
+      bool hasDocuments = false;
+      bool emptyDocuments = false;
+      {
+        FirebaseJsonData docsInfo;
+        hasDocuments = response.get(docsInfo, "documents");
+        if (hasDocuments)
+        {
+          if (docsInfo.type != "array")
+          {
+            _serial->printf("HABITS: documents tipo inesperado: %s.\n",
+                            docsInfo.type.c_str());
+            return false;
+          }
+          emptyDocuments = docsInfo.stringValue == "[]";
         }
+      } // docsInfo deixa de segurar a representacao inteira da lista.
 
-        for (size_t i = 0; i < docs.size(); ++i) {
+      if (hasDocuments)
+      {
+        // listDocuments foi chamado com pageSize=10. Acessamos cada item
+        // diretamente, sem copiar o array todo para um segundo objeto JSON.
+        for (size_t i = 0; i < 10; ++i)
+        {
           FirebaseJsonData item;
-          if (!docs.get(item, i)) continue;
+          const String path = "documents/[" + String(i) + "]";
+          if (!response.get(item, path))
+          {
+            if (i == 0 && !emptyDocuments)
+            {
+              _serial->println("HABITS: falha ao ler documents/[0].");
+              _serial->printf("HABITS MEM: heap=%lu | maior bloco=%lu\n",
+                              (unsigned long)ESP.getFreeHeap(),
+                              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+              return false;
+            }
+            break; // Fim dos documentos da pagina.
+          }
           FirebaseJson doc;
-          if (!item.getJSON(doc)) continue;
+          if (!item.getJSON(doc))
+          {
+            _serial->printf("HABITS: falha ao converter documento %u.\n",
+                            (unsigned)i);
+            return false;
+          }
 
           FirebaseJsonData documentName;
-          if (!doc.get(documentName, "name")) continue;
+          if (!doc.get(documentName, "name"))
+          {
+            _serial->printf("HABITS: documento %u sem nome.\n", (unsigned)i);
+            return false;
+          }
 
           const String fullName = documentName.to<String>();
           const int slash = fullName.lastIndexOf('/');
@@ -221,9 +308,11 @@ bool FirebaseManager::syncHabits() {
             habit.position = positionData.to<int>();
 
           FirebaseJsonData iconData;
-          if (doc.get(iconData, "fields/icon/mapValue/fields/data/stringValue")) {
+          if (doc.get(iconData, "fields/icon/mapValue/fields/data/stringValue"))
+          {
             const String base64 = iconData.to<String>();
-            if (!base64.isEmpty()) {
+            if (!base64.isEmpty())
+            {
               FirebaseJsonData formatData, widthData, heightData;
               const bool validFormat =
                   doc.get(formatData, "fields/icon/mapValue/fields/format/stringValue") &&
@@ -233,14 +322,18 @@ bool FirebaseManager::syncHabits() {
               const bool validHeight =
                   doc.get(heightData, "fields/icon/mapValue/fields/height/integerValue");
 
-              if (validFormat && validWidth && validHeight) {
+              if (validFormat && validWidth && validHeight)
+              {
                 habit.iconWidth = static_cast<uint16_t>(widthData.to<int>());
                 habit.iconHeight = static_cast<uint16_t>(heightData.to<int>());
-                if (!decodeIcon(base64, habit)) {
+                if (!decodeIcon(base64, habit))
+                {
                   _serial->print("HABITS: icone invalido em ");
                   _serial->println(habit.id);
                 }
-              } else {
+              }
+              else
+              {
                 _serial->print("HABITS: formato de icone nao suportado em ");
                 _serial->println(habit.id);
               }
@@ -252,7 +345,8 @@ bool FirebaseManager::syncHabits() {
       }
     }
 
-    if (nextToken.length() > 0 && nextToken == pageToken) {
+    if (nextToken.length() > 0 && nextToken == pageToken)
+    {
       _serial->println("HABITS: paginacao repetida.");
       return false;
     }
@@ -261,18 +355,68 @@ bool FirebaseManager::syncHabits() {
 
   // Ordenacao do aplicativo; em empate usa ID para ser deterministico.
   std::sort(incoming.begin(), incoming.end(),
-            [](const Habit& a, const Habit& b) {
-              if (a.position != b.position) return a.position < b.position;
+            [](const Habit &a, const Habit &b)
+            {
+              if (a.position != b.position)
+                return a.position < b.position;
               return a.id.compareTo(b.id) < 0;
             });
 
   // Só executa novas consultas depois de liberar o JSON principal.
-  for (Habit& habit : incoming) {
+  for (Habit &habit : incoming)
+  {
     if (!readLastCompletionDate(habit.id, habit.lastCompletedDate,
-                                habit.previousCompletedDate)) {
+                                habit.previousCompletedDate))
+    {
       _serial->println("HABITS: sincronizacao incompleta; dados anteriores preservados.");
       return false;
     }
+  }
+
+  // Transferencia dos icones para setores proprios da W25Q16.
+  // A leitura do Firestore e das completions ja terminou: evitamos perder
+  // a lista anterior se uma consulta de rede falhar no meio.
+  // Dois bancos por slot protegem icones ainda usados por _habits.
+  if (_iconFlash.begin())
+  {
+    for (size_t i = 0; i < incoming.size() && i < FlashManager::MAX_ICON_SLOTS; ++i)
+    {
+      Habit &habit = incoming[i];
+      if (habit.iconWidth != 48 || habit.iconHeight != 48 ||
+          habit.iconBytes.size() != FlashManager::ICON_BYTES ||
+          habit.iconHash == 0)
+        continue;
+
+      int8_t protectedBank = -1;
+      for (const Habit &old : _habits)
+      {
+        if (old.iconFlashSlot == static_cast<int8_t>(i))
+        {
+          protectedBank = old.iconFlashBank;
+          break;
+        }
+      }
+      int8_t bank = -1;
+      if (_iconFlash.storeIcon(static_cast<uint8_t>(i), habit.iconHash,
+                               habit.iconBytes.data(),
+                               static_cast<uint16_t>(habit.iconBytes.size()),
+                               protectedBank, bank))
+      {
+        habit.iconFlashSlot = static_cast<int8_t>(i);
+        habit.iconFlashBank = bank;
+        // swap() libera a capacidade do vector (clear() nao garante).
+        std::vector<uint8_t>().swap(habit.iconBytes);
+      }
+      else
+      {
+        _serial->printf("HABITS: icone %s ficou em RAM (falha Flash).\n",
+                        habit.id.c_str());
+      }
+    }
+  }
+  else
+  {
+    _serial->println("HABITS: Flash externa ausente; icones mantidos em RAM.");
   }
 
   // Troca atomica do conjunto de dados em RAM, apenas no sucesso.
@@ -281,11 +425,14 @@ bool FirebaseManager::syncHabits() {
   _serial->println();
   _serial->print("HABITS: sincronizacao OK. Total: ");
   _serial->println(_habits.size());
-  for (const Habit& habit : _habits) {
-    _serial->printf("  [%d] %s (ID: %s) | ultima: %s | icone: %u bytes\n",
+  for (const Habit &habit : _habits)
+  {
+    _serial->printf("  [%d] %s (ID: %s) | ultima: %s | icone RAM: %u bytes | flash: %d/%d\n",
                     habit.position, habit.name.c_str(), habit.id.c_str(),
                     habit.lastCompletedDate.isEmpty() ? "nunca" : habit.lastCompletedDate.c_str(),
-                    static_cast<unsigned>(habit.iconBytes.size()));
+                    static_cast<unsigned>(habit.iconBytes.size()),
+                    static_cast<int>(habit.iconFlashSlot),
+                    static_cast<int>(habit.iconFlashBank));
   }
   _serial->printf("HABITS: heap livre: %u bytes\n", ESP.getFreeHeap());
   return true;
@@ -293,29 +440,38 @@ bool FirebaseManager::syncHabits() {
 
 // Atualiza somente habits/{id}/completions/{YYYY-MM-DD}.
 // O Firestore continua sendo a fonte de verdade; syncHabits() recarrega depois.
-bool FirebaseManager::setHabitCompletedToday(const String& habitId,
-                                              const String& todayISO,
-                                              bool completed) {
-  if (WiFi.status() != WL_CONNECTED) {
+bool FirebaseManager::setHabitCompletedToday(const String &habitId,
+                                             const String &todayISO,
+                                             bool completed)
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
     _serial->println("HABIT TOUCH: sem Wi-Fi; nada foi alterado.");
     return false;
   }
   if (habitId.isEmpty() || todayISO.length() != 10 ||
-      todayISO[4] != '-' || todayISO[7] != '-') {
+      todayISO[4] != '-' || todayISO[7] != '-')
+  {
     _serial->println("HABIT TOUCH: ID ou data invalida.");
     return false;
   }
-  for (int i = 0; i < 10; ++i) {
-    if (i == 4 || i == 7) continue;
-    if (todayISO[i] < '0' || todayISO[i] > '9') return false;
+  for (int i = 0; i < 10; ++i)
+  {
+    if (i == 4 || i == 7)
+      continue;
+    if (todayISO[i] < '0' || todayISO[i] > '9')
+      return false;
   }
-  if (!awaitReady(5000)) return false;
+  if (!awaitReady(5000))
+    return false;
 
   const String path = "habits/" + habitId + "/completions/" + todayISO;
-  if (!completed) {
+  if (!completed)
+  {
     _serial->printf("HABIT TOUCH: removendo conclusao em %s\n", path.c_str());
     if (!Firebase.Firestore.deleteDocument(
-            &_fbdo, _projectId.c_str(), "", path.c_str())) {
+            &_fbdo, _projectId.c_str(), "", path.c_str()))
+    {
       _serial->print("HABIT TOUCH: erro ao remover: ");
       _serial->println(_fbdo.errorReason());
       return false;
@@ -324,7 +480,8 @@ bool FirebaseManager::setHabitCompletedToday(const String& habitId,
   }
 
   time_t now = time(nullptr);
-  if (now < 1700000000) {
+  if (now < 1700000000)
+  {
     _serial->println("HABIT TOUCH: relogio ainda nao sincronizado.");
     return false;
   }
@@ -339,7 +496,8 @@ bool FirebaseManager::setHabitCompletedToday(const String& habitId,
   doc.set("fields/completedAt/timestampValue", timestamp);
   _serial->printf("HABIT TOUCH: criando conclusao em %s\n", path.c_str());
   if (!Firebase.Firestore.createDocument(
-          &_fbdo, _projectId.c_str(), "", path.c_str(), doc.raw())) {
+          &_fbdo, _projectId.c_str(), "", path.c_str(), doc.raw()))
+  {
     _serial->print("HABIT TOUCH: erro ao criar: ");
     _serial->println(_fbdo.errorReason());
     return false;
@@ -350,16 +508,24 @@ bool FirebaseManager::setHabitCompletedToday(const String& habitId,
 // Muda apenas a representacao em RAM. Chamado somente pela task loop,
 // nunca pela task de rede (que usa _fbdo exclusivamente).
 bool FirebaseManager::setLocalHabitCompletedToday(
-    const String& habitId, const String& todayISO, bool completed) {
-  for (Habit& habit : _habits) {
-    if (habit.id != habitId) continue;
-    if (completed) {
-      if (habit.lastCompletedDate != todayISO) {
+    const String &habitId, const String &todayISO, bool completed)
+{
+  for (Habit &habit : _habits)
+  {
+    if (habit.id != habitId)
+      continue;
+    if (completed)
+    {
+      if (habit.lastCompletedDate != todayISO)
+      {
         habit.previousCompletedDate = habit.lastCompletedDate;
         habit.lastCompletedDate = todayISO;
       }
-    } else {
-      if (habit.lastCompletedDate == todayISO) {
+    }
+    else
+    {
+      if (habit.lastCompletedDate == todayISO)
+      {
         habit.lastCompletedDate = habit.previousCompletedDate;
         habit.previousCompletedDate = "";
       }
@@ -370,9 +536,12 @@ bool FirebaseManager::setLocalHabitCompletedToday(
 }
 
 bool FirebaseManager::restoreLocalHabitDates(
-    const String& habitId, const String& lastISO, const String& previousISO) {
-  for (Habit& habit : _habits) {
-    if (habit.id != habitId) continue;
+    const String &habitId, const String &lastISO, const String &previousISO)
+{
+  for (Habit &habit : _habits)
+  {
+    if (habit.id != habitId)
+      continue;
     habit.lastCompletedDate = lastISO;
     habit.previousCompletedDate = previousISO;
     return true;

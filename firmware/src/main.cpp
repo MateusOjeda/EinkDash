@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Preferences.h>
@@ -13,6 +12,9 @@
 #include <WiFiClientSecure.h>
 #include <sys/time.h>
 #include "HabitTouchAsync.h"
+#include "WeatherManager.h"
+#include <esp_heap_caps.h>
+#include <string.h>
 
 SET_LOOP_TASK_STACK_SIZE(24 * 1024);
 
@@ -21,6 +23,88 @@ FirebaseManager firebaseManager;
 DisplayManager displayManager;
 TouchManager touchManager;
 HabitTouchAsync habitTouchAsync(firebaseManager, displayManager);
+WeatherManager weatherManager;
+
+// Guarda a hora da ultima previsao ja desenhada na tela.
+char lastWeatherDrawn[17] = {};
+
+// Toque de alternancia: canto superior esquerdo, 90 x 50 pixels.
+// Nao salva a preferencia na NVS: apos reiniciar, abre o dashboard.
+bool privacyMode = false;
+bool privacyRequested = false;
+
+// Teste visual: comando Serial 'iconoff' mostra Wi-Fi cortado sem desconectar.
+// 'iconauto' volta a usar o estado real da conexao.
+bool forceOfflineIcon = false;
+bool iconNeedsRedraw = false;
+bool lastIconConnected = true;
+
+bool displayWifiConnected()
+{
+  return !forceOfflineIcon && WiFi.status() == WL_CONNECTED;
+}
+
+bool renderCurrentDashboard()
+{
+  struct tm now{};
+  if (!getLocalTime(&now, 1000))
+  {
+    Serial.println("PRIVACIDADE: relogio indisponivel para restaurar dashboard.");
+    return false;
+  }
+  char iso[11];
+  if (!strftime(iso, sizeof(iso), "%Y-%m-%d", &now))
+    return false;
+
+  DashboardData dashboard;
+  dashboard.todayISO = iso;
+  dashboard.habits = &firebaseManager.getHabits();
+  displayManager.setWifiConnected(displayWifiConnected());
+  displayManager.render(dashboard); // sem nova consulta de rede
+
+  // Evita redesenhar logo em seguida a mesma previsao.
+  if (weatherManager.hasData())
+    snprintf(lastWeatherDrawn, sizeof(lastWeatherDrawn), "%s",
+             weatherManager.data().observationTime);
+  return true;
+}
+
+void handlePrivacyCorner()
+{
+  if (privacyMode)
+  {
+    Serial.println("PRIVACIDADE: restaurando dashboard...");
+    if (renderCurrentDashboard())
+    {
+      privacyMode = false;
+      Serial.println("PRIVACIDADE: dashboard restaurado.");
+    }
+    return;
+  }
+
+  // Se houve uma marcacao de habito agora, aguardar o resultado do
+  // Firebase. Um rollback assincrono pode redesenhar o dashboard.
+  privacyRequested = !privacyRequested;
+  Serial.println(privacyRequested
+                     ? "PRIVACIDADE: ocultacao solicitada."
+                     : "PRIVACIDADE: ocultacao cancelada.");
+}
+
+
+void printMemory(const char *etapa)
+{
+  Serial.printf(
+      "\nMEM [%s]\n"
+      "Heap livre: %lu bytes\n"
+      "Maior bloco: %lu bytes\n"
+      "Menor heap registrado: %lu bytes\n"
+      "Stack livre minima do loop: %lu bytes\n",
+      etapa,
+      (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+      (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+      (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+      (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+}
 
 // ============================================================
 // SINCRONIZACAO DO RELOGIO
@@ -286,7 +370,13 @@ bool syncDashboard()
   Serial.println();
   Serial.println("EINKDASH: atualizando display...");
 
-  displayManager.render(dashboard);
+  if (!privacyMode && !privacyRequested)
+  {
+    displayManager.setWifiConnected(displayWifiConnected());
+    displayManager.render(dashboard);
+  }
+  else
+    Serial.println("PRIVACIDADE: dados sincronizados, sem revelar o dashboard.");
 
   Serial.println("EINKDASH: sincronizacao concluida.");
 
@@ -418,12 +508,12 @@ void setup()
       (unsigned)getArduinoLoopTaskStackSize());
 
   Serial.printf(
-      "Stack livre minima: %u bytes\n",
-      (unsigned)uxTaskGetStackHighWaterMark(NULL));
+      "Stack livre minima: %lu bytes\n",
+      (unsigned long)uxTaskGetStackHighWaterMark(NULL));
 
   Serial.printf(
-      "Heap livre: %u bytes\n",
-      ESP.getFreeHeap());
+      "Heap livre: %lu bytes\n",
+      (unsigned long)ESP.getFreeHeap());
 
   Serial.println();
   Serial.println("=== EINKDASH ===");
@@ -508,29 +598,60 @@ void setup()
   Serial.println("EINKDASH: Firebase autenticado.");
 
   Serial.printf(
-      "Stack livre minima apos Firebase: %u bytes\n",
-      (unsigned)uxTaskGetStackHighWaterMark(NULL));
+      "Stack livre minima apos Firebase: %lu bytes\n",
+      (unsigned long)uxTaskGetStackHighWaterMark(NULL));
 
   Serial.printf(
-      "Heap livre apos Firebase: %u bytes\n",
-      ESP.getFreeHeap());
+      "Heap livre apos Firebase: %lu bytes\n",
+      (unsigned long)ESP.getFreeHeap());
 
   // ==========================================================
-  // SINCRONIZAR DADOS E ATUALIZAR DISPLAY
+  // INICIALIZAR TOUCH, PREVISAO E DASHBOARD
   // ==========================================================
 
-  syncDashboard();
+  // O DisplayManager usa a previsao nas renderizacoes normais
+  // e tambem nas renderizacoes disparadas por um toque.
+  displayManager.attachWeather(&weatherManager);
 
-  // Usar 21/22 somente se corresponderem ao touch da sua placa.
+  // Pinos corretos do GT911 nesta placa: SDA=32, SCL=33.
   if (touchManager.begin(32, 33))
   {
     touchManager.setTransform(false, false, false);
     Serial.println("TOUCH: pronto para testes de coordenadas.");
   }
 
+  // Busca inicial ANTES da task permanente do Firebase,
+  // preservando a memoria necessaria para o HTTPS.
+  if (weatherManager.begin())
+  {
+    weatherManager.poll(true);
+
+    const uint32_t start = millis();
+
+    while (!weatherManager.hasData() &&
+           millis() - start < 12000)
+    {
+      weatherManager.poll(false);
+      delay(30);
+    }
+  }
+
+  // A primeira renderizacao ja inclui os dados meteorologicos
+  // caso a consulta inicial tenha sido bem-sucedida.
+  const bool dashboardDrawn = syncDashboard();
+
+  // Marca a previsao inicial como desenhada para evitar
+  // uma segunda renderizacao identica no primeiro loop().
+  if (dashboardDrawn && weatherManager.hasData())
+  {
+    snprintf(lastWeatherDrawn, sizeof(lastWeatherDrawn),
+             "%s", weatherManager.data().observationTime);
+  }
+
+  // Iniciar a task permanente de gravacao de habitos por ultimo.
   if (!habitTouchAsync.begin())
   {
-    Serial.println("TOUCH ASYNC: erro! Gravacao por toque desativada.");
+    Serial.println("TOUCH ASYNC: erro ao iniciar.");
   }
 }
 
@@ -567,6 +688,23 @@ void loop()
     // SINCRONIZACAO MANUAL
     // ========================================================
 
+    else if (cmd == "weather")
+    {
+      weatherManager.requestNow();
+    }
+    else if (cmd == "iconoff")
+    {
+      forceOfflineIcon = true;
+      iconNeedsRedraw = true;
+      Serial.println("ICONE: simulando Wi-Fi desconectado (Wi-Fi continua ativo).");
+    }
+    else if (cmd == "iconauto")
+    {
+      forceOfflineIcon = false;
+      iconNeedsRedraw = true;
+      Serial.println("ICONE: voltando ao estado real do Wi-Fi.");
+    }
+
     else if (cmd == "sync")
     {
       if (habitTouchAsync.hasPending())
@@ -589,10 +727,87 @@ void loop()
 #endif
 
   habitTouchAsync.poll(); // processar confirmacoes/falhas do Firebase
+
+  // A data muda sem reconstruir a imagem-base. Um refresh so e pedido
+  // quando o indicador realmente muda, e nunca revela o modo visitas.
+  const bool iconConnected = displayWifiConnected();
+  displayManager.setWifiConnected(iconConnected);
+  if (iconConnected != lastIconConnected)
+  {
+    lastIconConnected = iconConnected;
+    iconNeedsRedraw = true;
+  }
+
+  // Busca meteo em background a cada 60 min (falha: retry em 5 min).
+  // Evita iniciar nova requisicao enquanto ha gravacoes de habitos pendentes.
+  weatherManager.poll(!habitTouchAsync.hasPending());
   TouchPointEink touch;
   if (touchManager.readTap(touch))
   {
-    habitTouchAsync.handleTap(touch);
+    // O canto superior esquerdo funciona no dashboard e na foto.
+    if (touch.x >= 0 && touch.x < 90 && touch.y >= 0 && touch.y < 50)
+      handlePrivacyCorner();
+    else if (!privacyMode && !privacyRequested)
+      habitTouchAsync.handleTap(touch);
+    // Em modo visitas, qualquer outro toque e ignorado.
+  }
+
+  // So trocar de imagem depois que todas as gravacoes pendentes
+  // terminarem, evitando que um rollback do Firebase revele habitos.
+  if (privacyRequested && !privacyMode && !habitTouchAsync.hasPending())
+  {
+    privacyRequested = false;
+    if (displayManager.showPrivacyImage())
+    {
+      privacyMode = true;
+      Serial.println("PRIVACIDADE: modo visitas ativo.");
+    }
+    else
+    {
+      Serial.println("PRIVACIDADE: foto indisponivel; dashboard mantido.");
+      // Se a leitura falhou a meio da transferencia, restaurar a tela.
+      renderCurrentDashboard();
+    }
+  }
+
+  if (iconNeedsRedraw && !privacyMode && !privacyRequested &&
+      !habitTouchAsync.hasPending())
+  {
+    Serial.println("DISPLAY: estado da rede mudou; atualizando cabecalho.");
+    if (renderCurrentDashboard()) iconNeedsRedraw = false;
+  }
+
+  if (!privacyMode && !privacyRequested &&
+      !habitTouchAsync.hasPending() && weatherManager.hasData())
+  {
+    const WeatherData &w = weatherManager.data();
+
+    if (w.observationTime[0] != '\0' &&
+        strcmp(lastWeatherDrawn, w.observationTime) != 0)
+    {
+
+      struct tm now{};
+
+      if (getLocalTime(&now, 1000))
+      {
+        char iso[11];
+
+        if (strftime(iso, sizeof(iso), "%Y-%m-%d", &now))
+        {
+          DashboardData dashboard;
+          dashboard.todayISO = iso;
+          dashboard.habits = &firebaseManager.getHabits();
+
+          Serial.println("DISPLAY: nova previsao, atualizando card do clima.");
+
+          displayManager.setWifiConnected(displayWifiConnected());
+          displayManager.render(dashboard);
+
+          snprintf(lastWeatherDrawn, sizeof(lastWeatherDrawn),
+                   "%s", w.observationTime);
+        }
+      }
+    }
   }
 
   delay(50);

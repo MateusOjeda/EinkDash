@@ -194,3 +194,89 @@ bool FlashManager::finishWrite() {
   _currentKey = _writingKey;
   return true;
 }
+
+// ================================================================
+// Icones individuais na W25Q16: dois bancos por posicao.
+// Mantemos intacto o banco referenciado pela lista de habitos ativa.
+// A gravacao nunca toca os setores da imagem-base.
+// ================================================================
+uint32_t FlashManager::iconAddress(uint8_t slot, uint8_t bank) const {
+  return ICONS_ADDR + (uint32_t(slot) * ICON_BANKS + bank) * SECTOR_SIZE;
+}
+
+bool FlashManager::iconHeader(uint8_t slot, uint8_t bank, IconHeader& h) {
+  if (slot >= MAX_ICON_SLOTS || bank >= ICON_BANKS) return false;
+  return readAt(iconAddress(slot, bank), reinterpret_cast<uint8_t*>(&h), sizeof(h));
+}
+
+bool FlashManager::readIcon(uint8_t slot, int8_t bank, uint32_t key,
+                            uint8_t* out, uint16_t size) {
+  if (!_present || !out || slot >= MAX_ICON_SLOTS ||
+      bank < 0 || bank >= ICON_BANKS || size != ICON_BYTES) return false;
+  IconHeader h{};
+  if (!iconHeader(slot, static_cast<uint8_t>(bank), h)) return false;
+  if (memcmp(h.magic, "EKI1", 4) != 0 || h.version != 1 ||
+      h.key != key || h.length != size || h.committed != 0x00) return false;
+  if (!readAt(iconAddress(slot, static_cast<uint8_t>(bank)) + sizeof(IconHeader),
+              out, size)) return false;
+  return (crcUpdate(0xFFFFFFFFUL, out, size) ^ 0xFFFFFFFFUL) == h.crc32;
+}
+
+bool FlashManager::storeIcon(uint8_t slot, uint32_t key,
+                             const uint8_t* bytes, uint16_t size,
+                             int8_t avoidBank, int8_t& storedBank) {
+  storedBank = -1;
+  if (slot >= MAX_ICON_SLOTS || !bytes || size != ICON_BYTES ||
+      !begin()) return false;
+
+  // Se o mesmo icone ja esta gravado, nao regrava nem desgasta a Flash.
+  uint8_t scratch[ICON_BYTES];
+  for (uint8_t bank = 0; bank < ICON_BANKS; ++bank) {
+    if (readIcon(slot, bank, key, scratch, size) &&
+        memcmp(scratch, bytes, size) == 0) {
+      storedBank = static_cast<int8_t>(bank);
+      return true;
+    }
+  }
+
+  // Faz a substituicao SEM apagar o banco referenciado por _habits.
+  const uint8_t bank = (avoidBank == 0) ? 1 : 0;
+  const uint32_t addr = iconAddress(slot, bank);
+  IconHeader old{};
+  if (!iconHeader(slot, bank, old)) return false;
+  const bool owned = memcmp(old.magic, "EKI1", 4) == 0 && old.version == 1;
+  if (owned) {
+    if (!eraseSector(addr)) return false;
+  } else if (!blank(addr, SECTOR_SIZE)) {
+    Serial.printf("FLASH ICON: setor %08lX desconhecido; preservado.\n",
+                  static_cast<unsigned long>(addr));
+    return false;
+  }
+
+  IconHeader h;
+  memset(&h, 0xFF, sizeof(h));
+  memcpy(h.magic, "EKI1", 4);
+  h.version = 1;
+  h.key = key;
+  h.length = size;
+  h.crc32 = crcUpdate(0xFFFFFFFFUL, bytes, size) ^ 0xFFFFFFFFUL;
+  // committed=0xFF durante a gravacao. So marca 0 ao validar.
+  if (!program(addr, reinterpret_cast<const uint8_t*>(&h), sizeof(h))) return false;
+
+  size_t sent = 0;
+  while (sent < size) {
+    const uint32_t at = addr + sizeof(h) + sent;
+    size_t n = 256 - (at & 255U);
+    if (n > size - sent) n = size - sent;
+    if (!program(at, bytes + sent, n)) return false;
+    sent += n;
+  }
+
+  uint8_t verify[ICON_BYTES];
+  if (!readAt(addr + sizeof(h), verify, size) ||
+      memcmp(verify, bytes, size) != 0) return false;
+  const uint8_t committed = 0;
+  if (!program(addr + offsetof(IconHeader, committed), &committed, 1)) return false;
+  storedBank = static_cast<int8_t>(bank);
+  return true;
+}

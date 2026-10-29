@@ -44,6 +44,8 @@ void HabitTouchAsync::workerLoop() {
         String(job.id), String(job.todayISO), job.completed);
     const Result result{job.seq, ok};
     xQueueSend(_results, &result, portMAX_DELAY);
+    Serial.printf("MEM TASK Firebase: stack minima livre=%lu bytes\n",
+                  static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
   }
 }
 

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "Habit.h"
+#include "FlashManager.h"
 
 class FirebaseManager {
  public:
@@ -33,6 +34,7 @@ class FirebaseManager {
   String _projectId;
   Stream* _serial = nullptr;
   std::vector<Habit> _habits;
+  FlashManager _iconFlash;
 
   bool awaitReady(uint32_t timeoutMs = 20000);
   bool readLastCompletionDate(const String& habitId, String& outDate, String& outPrevious);

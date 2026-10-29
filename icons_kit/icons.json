@@ -1,0 +1,169 @@
+{
+	"icons": [
+		{
+			"id": 100,
+			"file": "clear_day_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{ "id": 200, "file": "clear_day_small.png", "width": 48, "height": 48 },
+
+		{
+			"id": 101,
+			"file": "partly_cloudy_day_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 201,
+			"file": "partly_cloudy_day_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{ "id": 102, "file": "cloudy_main.png", "width": 128, "height": 112 },
+		{ "id": 202, "file": "cloudy_small.png", "width": 48, "height": 48 },
+
+		{ "id": 103, "file": "overcast_main.png", "width": 128, "height": 112 },
+		{ "id": 203, "file": "overcast_small.png", "width": 48, "height": 48 },
+
+		{ "id": 104, "file": "fog_main.png", "width": 128, "height": 112 },
+		{ "id": 204, "file": "fog_small.png", "width": 48, "height": 48 },
+
+		{ "id": 105, "file": "drizzle_main.png", "width": 128, "height": 112 },
+		{ "id": 205, "file": "drizzle_small.png", "width": 48, "height": 48 },
+
+		{ "id": 106, "file": "rain_main.png", "width": 128, "height": 112 },
+		{ "id": 206, "file": "rain_small.png", "width": 48, "height": 48 },
+
+		{ "id": 107, "file": "showers_main.png", "width": 128, "height": 112 },
+		{ "id": 207, "file": "showers_small.png", "width": 48, "height": 48 },
+
+		{ "id": 108, "file": "thunder_main.png", "width": 128, "height": 112 },
+		{ "id": 208, "file": "thunder_small.png", "width": 48, "height": 48 },
+
+		{
+			"id": 109,
+			"file": "clear_night_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 209,
+			"file": "clear_night_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{
+			"id": 110,
+			"file": "partly_cloudy_night_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 210,
+			"file": "partly_cloudy_night_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{ "id": 111, "file": "snow_main.png", "width": 128, "height": 112 },
+		{ "id": 211, "file": "snow_small.png", "width": 48, "height": 48 },
+
+		{
+			"id": 112,
+			"file": "cloudy_night_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 212,
+			"file": "cloudy_night_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{
+			"id": 113,
+			"file": "heavy_rain_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 213,
+			"file": "heavy_rain_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{
+			"id": 114,
+			"file": "thunder_hail_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 214,
+			"file": "thunder_hail_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{
+			"id": 115,
+			"file": "freezing_rain_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 215,
+			"file": "freezing_rain_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{
+			"id": 116,
+			"file": "mostly_clear_day_main.png",
+			"width": 128,
+			"height": 112
+		},
+		{
+			"id": 216,
+			"file": "mostly_clear_day_small.png",
+			"width": 48,
+			"height": 48
+		},
+
+		{ "id": 301, "file": "indicator_rain.png", "width": 48, "height": 48 },
+		{ "id": 302, "file": "indicator_wind.png", "width": 48, "height": 48 },
+		{ "id": 303, "file": "indicator_uv.png", "width": 48, "height": 48 },
+
+		{ "id": 304, "file": "temperature.png", "width": 48, "height": 48 },
+		{ "id": 305, "file": "humidity.png", "width": 48, "height": 48 },
+		{ "id": 306, "file": "co2.png", "width": 48, "height": 48 },
+		{ "id": 307, "file": "luminosity.png", "width": 48, "height": 48 },
+		{ "id": 308, "file": "pm25.png", "width": 48, "height": 48 },
+		{ "id": 309, "file": "noise.png", "width": 48, "height": 48 },
+
+		{ "id": 310, "file": "wifi.png", "width": 48, "height": 48 },
+		{ "id": 311, "file": "hydration.png", "width": 48, "height": 48 },
+		{ "id": 312, "file": "bicycle.png", "width": 48, "height": 48 },
+		{ "id": 313, "file": "steps.png", "width": 48, "height": 48 },
+		{
+			"id": 314,
+			"file": "phone_screen_time.png",
+			"width": 48,
+			"height": 48
+		},
+		{
+			"id": 315,
+			"file": "computer_screen_time.png",
+			"width": 48,
+			"height": 48
+		},
+		{ "id": 317, "file": "tv_screen_time.png", "width": 48, "height": 48 },
+		{ "id": 318, "file": "umbrella.png", "width": 48, "height": 48 }
+	]
+}
