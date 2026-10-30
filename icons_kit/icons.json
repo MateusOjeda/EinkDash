@@ -183,6 +183,12 @@
 			"file": "airquality.png",
 			"width": 48,
 			"height": 48
+		},
+		{
+			"id": 323,
+			"file": "birthday.png",
+			"width": 48,
+			"height": 48
 		}
 	]
 }

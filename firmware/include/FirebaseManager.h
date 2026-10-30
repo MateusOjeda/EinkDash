@@ -8,6 +8,8 @@
 
 #include "Habit.h"
 #include "FlashManager.h"
+#include "CalendarData.h"
+#include "ScreenTimeDetails.h"
 
 struct DeviceSettings
 {
@@ -35,6 +37,23 @@ public:
   bool restoreLocalHabitDates(const String &habitId, const String &lastISO, const String &previousISO);
 
   bool syncSettings(const char *documentPath);
+
+  // Consulta calendar/AAAA-MM-DD (documento gravado pelo Apps Script).
+  bool readCalendarDay(const char *date, CalendarDay &out);
+
+  // Busca SOMENTE birthdays/MM-DD para a data solicitada.
+  // Documento ausente (404) significa nenhum aniversario naquele dia.
+  bool readBirthdaysForDay(const char *isoDate, std::vector<CalendarBirthday> &out);
+
+  bool readScreenTime(
+      const char *deviceId,
+      const char *date,
+      uint32_t &totalTV,
+      uint32_t &totalPC);
+
+  // Consulta UNICA sob toque; traz categorias tv/pc (nao faz polling).
+  bool readScreenTimeDetails(const char *deviceId, const char *date,
+                             ScreenTimeDetails &out);
 
   const DeviceSettings &getSettings() const
   {

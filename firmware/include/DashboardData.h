@@ -18,6 +18,8 @@ struct DashboardData
   const WeatherData *weather = nullptr;
   const AirQualityData *airQuality = nullptr;
   const PollenData *pollen = nullptr;
+  uint32_t totalSecondsTV = 0;
+  uint32_t totalSecondsPC = 0;
   String todayISO; // YYYY-MM-DD, horario local; vazio se nao houve sincronizacao de relogio.
 
   // Futuramente: clima, agenda, tempo de tela e sensores.

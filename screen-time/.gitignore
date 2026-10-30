@@ -2,3 +2,6 @@
 *service-account*.json
 *.json.tmp
 __pycache__/
+
+
+einkdash-51f0b-firebase-adminsdk-fbsvc-1a330de349.json

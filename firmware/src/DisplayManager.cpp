@@ -28,8 +28,10 @@ static FlashManager flash; // compartilhado pelo renderizador rapido e de emerge
 static const char *FONT_14_PATH = "/fonts/InterDisplay-SemiBold_14.bin";
 static const char *FONT_16_PATH = "/fonts/InterDisplay-SemiBold_16.bin";
 static const char *FONT_20_PATH = "/fonts/InterDisplay-SemiBold_20.bin";
+static const char *FONT_22_PATH = "/fonts/InterDisplay-SemiBold_22.bin";
 static const char *FONT_24_PATH = "/fonts/InterDisplay-SemiBold_24.bin";
 static const char *FONT_32_PATH = "/fonts/InterDisplay-SemiBold_32.bin";
+static const char *FONT_40_PATH = "/fonts/InterDisplay-SemiBold_40.bin";
 
 namespace
 {
@@ -40,6 +42,10 @@ namespace
   QFontGfx font20;
   QFontGfx font24;
   QFontGfx font32;
+  QFontGfx font22;
+  QFontGfx font40;
+  bool hasFont22 = false;
+  bool hasFont40 = false;
 
   struct FontRegistration
   {
@@ -567,6 +573,7 @@ namespace
   }
 
   void drawDemoIndicators(Adafruit_GFX &gfx, Icons &icons,
+                          const DashboardData &data,
                           int16_t top, int16_t bottom)
   {
     const MetricDemoData m;
@@ -602,8 +609,15 @@ namespace
     // Tempo de tela: 3 mini-cards inferiores, sem titulos nos cards principais.
     const uint16_t screenIds[3] = {314, 315, 317};
     const char *screenNames[3] = {"Celular", "PC", "TV"};
-    const uint8_t hours[3] = {m.phoneHours, m.pcHours, m.tvHours};
-    const uint8_t minutes[3] = {m.phoneMinutes, m.pcMinutes, m.tvMinutes};
+    const uint8_t hours[3] = {
+        m.phoneHours,
+        static_cast<uint8_t>(data.totalSecondsPC / 3600),
+        static_cast<uint8_t>(data.totalSecondsTV / 3600)};
+
+    const uint8_t minutes[3] = {
+        m.phoneMinutes,
+        static_cast<uint8_t>((data.totalSecondsPC % 3600) / 60),
+        static_cast<uint8_t>((data.totalSecondsTV % 3600) / 60)};
     for (int c = 0; c < 3; ++c)
     {
       const int16_t x = ACT_TILE_X + c * ACT_TILE_STEP;
@@ -909,7 +923,7 @@ static void renderLegacy(const DashboardData &data, const WeatherData *weather, 
     drawCompactWeather(display, weather, icons, pageTop, pageBottom);
     drawAirQuality(display, data.airQuality, icons, pageTop, pageBottom);
     drawPollen(display, data.pollen, icons, pageTop, pageBottom);
-    drawDemoIndicators(display, icons, pageTop, pageBottom);
+    drawDemoIndicators(display, icons, data, pageTop, pageBottom);
     if (data.habits)
     {
       const size_t count = std::min<size_t>(data.habits->size(), MAX_VISIBLE_HABITS);
@@ -951,10 +965,16 @@ namespace
     {
       _pageY = y;
       _pageH = h;
+      _textTint = TextTint::Normal;
       memset(_buf, 0xFF, sizeof(_buf));
     }
     uint8_t *bytes() { return _buf; }
     const uint8_t *bytes() const { return _buf; }
+
+    // Reaproveita a mesma QFNT de 16 px: muda somente a tinta dos glifos.
+    // Ative exclusivamente durante drawText(), nunca durante os cards.
+    enum class TextTint : uint8_t { Normal, OtherMonth, SelectedWhite };
+    void setTextTint(TextTint tint) { _textTint = tint; }
 
     void drawPixel(int16_t x, int16_t y, uint16_t color) override
     {
@@ -969,6 +989,19 @@ namespace
         v = 1;
       else
         v = 0;
+      // A QFNT desenha preto/antialias sobre branco; remapeia apenas
+      // esses pixels para cinza-claro ou branco no dia selecionado.
+      // A ordem dos 4 tons neste buffer e 0=preto ... 3=branco.
+      if (_textTint == TextTint::OtherMonth)
+      {
+        static const uint8_t PALE[4] = {2, 2, 3, 3};
+        v = PALE[v];
+      }
+      else if (_textTint == TextTint::SelectedWhite)
+      {
+        static const uint8_t INVERSE[4] = {3, 2, 1, 1};
+        v = INVERSE[v];
+      }
       const size_t at = size_t(y - _pageY) * (WIDTH / 4) + (x >> 2);
       const uint8_t shift = 2 * (3 - (x & 3));
       _buf[at] = (_buf[at] & ~(uint8_t(3) << shift)) | (v << shift);
@@ -1004,10 +1037,56 @@ namespace
   private:
     int16_t _pageY = 0;
     int16_t _pageH = STRIPE;
+    TextTint _textTint = TextTint::Normal;
     uint8_t _buf[STRIPE_BYTES];
   };
 
   PageCanvas canvas;
+
+  // Fundo compartilhado pelas telas Calendario e Tempo de Tela.
+  // Mesmo RAW 800x480 em 4 tons (2 bpp) usado no modo Privacidade.
+  // Le diretamente do LittleFS em faixas: nenhum buffer de 96 KB na RAM.
+  constexpr const char *DETAILS_BACKGROUND_PATH = "/image-calendar.bin";
+  constexpr size_t DETAILS_BACKGROUND_SIZE = size_t(WIDTH) * HEIGHT / 4;
+
+  File openDetailsBackground()
+  {
+    File file = LittleFS.open(DETAILS_BACKGROUND_PATH, "r");
+    if (!file)
+    {
+      Serial.println("FUNDO: /image-calendar.bin ausente; usando fundo cinza.");
+      return File();
+    }
+    if (file.size() != DETAILS_BACKGROUND_SIZE)
+    {
+      Serial.printf("FUNDO: arquivo invalido (%lu bytes; esperado %lu); usando fundo cinza.\n",
+                    (unsigned long)file.size(), (unsigned long)DETAILS_BACKGROUND_SIZE);
+      file.close();
+      return File();
+    }
+    Serial.println("FUNDO: /image-calendar.bin carregado (800x480, 4 tons).");
+    return file;
+  }
+
+  // Deve ser chamada depois de canvas.beginPage() e antes dos cards/textos.
+  // Se a imagem nao existir, mantem o cinza antigo como fallback.
+  // Quando o arquivo esta aberto, uma unica leitura sequencial por faixa.
+  bool drawDetailsBackgroundPage(PageCanvas &gfx, File &file,
+                                 int16_t rows)
+  {
+    if (file)
+    {
+      const size_t expected = size_t(rows) * WIDTH / 4;
+      const size_t readBytes = file.read(gfx.bytes(), expected);
+      if (readBytes == expected)
+        return true;
+      Serial.printf("FUNDO: leitura incompleta (%lu/%lu bytes).\n",
+                    (unsigned long)readBytes, (unsigned long)expected);
+      file.close();
+    }
+    gfx.fillScreen(GxEPD_LIGHTGREY);
+    return false;
+  }
 
   // FNV-1a: somente a parte ESTATICA do layout. Quando ordem, icone, nome,
   // quantidade ou data do cabecalho mudarem, a imagem-base e reconstruida.
@@ -1123,6 +1202,508 @@ namespace
     }
   }
 
+  // Geometria do calendario: fundo liso e dois cards brancos.
+  constexpr int16_t CAL_LEFT_X = 70;
+  constexpr int16_t CAL_LEFT_Y = 95;
+  constexpr int16_t CAL_LEFT_W = 310;
+  constexpr int16_t CAL_LEFT_H = 320;
+  constexpr int16_t CAL_RIGHT_X = 388;
+  constexpr int16_t CAL_RIGHT_Y = 95;
+  constexpr int16_t CAL_RIGHT_W = 400;
+  constexpr int16_t CAL_RIGHT_H = 355;
+  constexpr int16_t CAL_GRID_X = CAL_LEFT_X + 8;
+  constexpr int16_t CAL_GRID_Y = 149;
+  constexpr int16_t CAL_CELL_W = 42;
+  constexpr int16_t CAL_CELL_H = 43;
+  constexpr int16_t CAL_HOURS_START = 7;
+  constexpr int16_t CAL_HOURS_END = 20;
+
+  String calendarFitText(QFontGfx &font, String text, int16_t maxWidth)
+  {
+    if (font.textWidth(text) <= maxWidth)
+      return text;
+    const String ellipsis = "...";
+    while (!text.isEmpty() && font.textWidth(text + ellipsis) > maxWidth)
+    {
+      size_t pos = text.length() - 1;
+      while (pos > 0 && (static_cast<uint8_t>(text[pos]) & 0xC0) == 0x80)
+        --pos;
+      text.remove(pos);
+    }
+    return text + ellipsis;
+  }
+
+  void drawCalendarMonth(PageCanvas &gfx, const CalendarDay &selected,
+                         int16_t top, int16_t bottom)
+  {
+    int year, month, selectedDay;
+    if (!parseISODate(selected.date, year, month, selectedDay))
+      return;
+    static const char *MONTHS[] = {"Janeiro", "Fevereiro", "Março", "Abril",
+                                   "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"};
+    const String heading = String(MONTHS[month - 1]) + " " + String(year);
+    // Titulo fixo de 32 px, alinhado a esquerda. O voltar segue invisivel.
+    font32.drawText(gfx, CAL_LEFT_X + 12, 78, heading,
+                    GxEPD_LIGHTGREY, top, bottom);
+
+    static const char *WEEKDAYS[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"};
+    gfx.fillRoundRect(CAL_LEFT_X + 7, CAL_LEFT_Y + 7,
+                      CAL_LEFT_W - 14, 36, 5, GxEPD_LIGHTGREY);
+    for (int c = 0; c < 7; ++c)
+    {
+      const String wd(WEEKDAYS[c]);
+      font14.drawText(gfx, CAL_GRID_X + c * CAL_CELL_W + (CAL_CELL_W - font14.textWidth(wd)) / 2,
+                      128, wd, GxEPD_LIGHTGREY, top, bottom);
+    }
+
+    const int32_t first = daysFromCivil(year, month, 1);
+    const int dow = ((first - daysFromCivil(1970, 1, 1) + 4) % 7 + 7) % 7;
+    const int32_t next = month == 12 ? daysFromCivil(year + 1, 1, 1)
+                                     : daysFromCivil(year, month + 1, 1);
+    const int monthDays = static_cast<int>(next - first);
+    const int prevMonth = month == 1 ? 12 : month - 1;
+    const int prevYear = month == 1 ? year - 1 : year;
+    const int prevDays = static_cast<int>(first - daysFromCivil(prevYear, prevMonth, 1));
+    // Todos os dias usam a QFNT de 16 px (inclusive o selecionado).
+    for (int cell = 0; cell < 42; ++cell)
+    {
+      const int d = cell - dow + 1;
+      const bool currentMonth = d >= 1 && d <= monthDays;
+      const bool highlighted = currentMonth && d == selectedDay;
+      const int16_t x = CAL_GRID_X + (cell % 7) * CAL_CELL_W;
+      const int16_t y = CAL_GRID_Y + (cell / 7) * CAL_CELL_H;
+      if (highlighted)
+        gfx.fillRoundRect(x + 4, y + 2, CAL_CELL_W - 8,
+                          CAL_CELL_H - 5, 6, GxEPD_DARKGREY);
+
+      const int shown = d < 1 ? prevDays + d : (d > monthDays ? d - monthDays : d);
+      const String text = String(shown);
+      const int16_t textX = x + (CAL_CELL_W - font16.textWidth(text)) / 2;
+      if (highlighted)
+        gfx.setTextTint(PageCanvas::TextTint::SelectedWhite);
+      else if (!currentMonth)
+        gfx.setTextTint(PageCanvas::TextTint::OtherMonth);
+      // Passa branco para a QFNT gerar as 4 intensidades originais.
+      // O PageCanvas recolore apenas os glifos dos dias especiais.
+      font16.drawText(gfx, textX, y + 28, text,
+                      GxEPD_WHITE, top, bottom);
+      gfx.setTextTint(PageCanvas::TextTint::Normal);
+    }
+  }
+
+  // Exibe ate duas linhas; fonte minima de 14 px, nunca microtexto.
+  void drawCalendarLines(PageCanvas &gfx, QFontGfx &font, const String &value,
+                         int16_t x, int16_t baseline, int16_t width,
+                         int16_t top, int16_t bottom)
+  {
+    if (font.textWidth(value) <= width)
+    {
+      font.drawText(gfx, x, baseline + 8, value, GxEPD_LIGHTGREY, top, bottom);
+      return;
+    }
+    int lastSpace = -1;
+    for (int i = 0; i < (int)value.length(); ++i)
+      if (value[i] == ' ' && font.textWidth(value.substring(0, i)) <= width)
+        lastSpace = i;
+    if (lastSpace < 1)
+    {
+      font.drawText(gfx, x, baseline + 8,
+                    calendarFitText(font, value, width), GxEPD_LIGHTGREY, top, bottom);
+      return;
+    }
+    font.drawText(gfx, x, baseline,
+                  value.substring(0, lastSpace), GxEPD_LIGHTGREY, top, bottom);
+    font.drawText(gfx, x, baseline + 19,
+                  calendarFitText(font, value.substring(lastSpace + 1), width),
+                  GxEPD_LIGHTGREY, top, bottom);
+  }
+
+  int calendarClockMinutes(const String &time)
+  {
+    if (time.length() != 5 || time[2] != ':')
+      return -1;
+    for (int i = 0; i < 5; ++i)
+      if (i != 2 && (time[i] < '0' || time[i] > '9'))
+        return -1;
+    const int h = time.substring(0, 2).toInt();
+    const int m = time.substring(3, 5).toInt();
+    return (h >= 0 && h <= 24 && m < 60 && !(h == 24 && m)) ? h * 60 + m : -1;
+  }
+
+  void drawCalendarAgenda(PageCanvas &gfx, Icons &icons,
+                          const CalendarDay &selected,
+                          const std::vector<CalendarBirthday> &birthdays,
+                          int16_t top, int16_t bottom)
+  {
+    int year, month, date;
+    if (!parseISODate(selected.date, year, month, date))
+      return;
+    // Nomes de aniversariantes fora da linha do tempo, sem horario.
+    String names;
+    uint16_t nBirthdays = 0;
+    for (const CalendarBirthday &birthday : birthdays)
+      if (birthday.month == month && birthday.day == date)
+      {
+        if (nBirthdays)
+          names += ", ";
+        names += birthday.name;
+        ++nBirthdays;
+      }
+    if (nBirthdays > 1)
+    {
+      const int comma = names.lastIndexOf(", ");
+      if (comma >= 0)
+        names = names.substring(0, comma) + " e " + names.substring(comma + 2);
+    }
+    const bool haveBdays = nBirthdays > 0;
+    const bool haveAllDay = std::any_of(selected.events.begin(), selected.events.end(),
+                                        [](const CalendarEvent &ev)
+                                        { return ev.allDay; });
+    // Reduz a margem superior do card de aniversarios de 16 para 8 px.
+    int16_t timelineTop = CAL_RIGHT_Y + 8;
+    // A faixa de aniversarios permanece presente mesmo quando nao houver nomes.
+    // Evita que a escala de horarios pule ao trocar de data.
+    {
+      const String birthdayLabel = haveBdays ? names : String("Nenhum aniversário nesta data");
+      constexpr int16_t BIRTHDAY_TEXT_X = 447; // ajuste horizontal escolhido pelo usuario
+      constexpr int16_t BIRTHDAY_TEXT_W = 310;
+      const bool needsTwoLines = font14.textWidth(birthdayLabel) > BIRTHDAY_TEXT_W;
+      const int16_t birthdayHeight = needsTwoLines ? 49 : 32;
+      gfx.fillRoundRect(432, timelineTop, 340, birthdayHeight, 5, GxEPD_LIGHTGREY);
+      icons.draw(gfx, 323, 396, timelineTop + (birthdayHeight - 30) / 2,
+                 30, 30, top, bottom);
+      drawCalendarLines(gfx, font14, birthdayLabel, BIRTHDAY_TEXT_X,
+                        timelineTop + 12, BIRTHDAY_TEXT_W, top, bottom);
+      // Deixa 18 px entre a faixa de aniversarios e a agenda horaria.
+      timelineTop += birthdayHeight + 18;
+    }
+    if (haveAllDay)
+    {
+      String allDay;
+      for (const CalendarEvent &event : selected.events)
+        if (event.allDay)
+        {
+          if (!allDay.isEmpty())
+            allDay += ", ";
+          allDay += event.title;
+        }
+      gfx.fillRoundRect(433, timelineTop, 339, 26, 6, GxEPD_LIGHTGREY);
+      font14.drawText(gfx, 443, timelineTop + 19,
+                      calendarFitText(font14, allDay, 319),
+                      GxEPD_LIGHTGREY, top, bottom);
+      timelineTop += 33;
+    }
+
+    if (selected.loadError || !selected.found)
+    {
+      const String message = selected.loadError
+                                 ? "Erro ao buscar agenda"
+                                 : "Data ainda nao sincronizada";
+      font16.drawText(gfx, 407, timelineTop + 37, message,
+                      GxEPD_WHITE, top, bottom);
+      return;
+    }
+    // Escala 07h--20h. Blocos dos eventos sao proporcionais a duracao.
+    // 27 px de margem inferior dentro do card para acomodar o texto 20:00.
+    const int16_t timelineBottom = CAL_RIGHT_Y + CAL_RIGHT_H - 27;
+    const int16_t span = timelineBottom - timelineTop;
+    if (span < 125)
+      return;
+    constexpr int16_t axisX = 450, blockX = 460, blockRight = 775;
+    // Como no Google Agenda: linhas finas marcando cada hora e um eixo vertical.
+    // Os eventos sao desenhados depois, por cima das linhas, em sua duracao real.
+    gfx.drawFastVLine(axisX, timelineTop, span, GxEPD_LIGHTGREY);
+    for (int hour = CAL_HOURS_START; hour <= CAL_HOURS_END; ++hour)
+    {
+      const int16_t yy = timelineTop +
+                         static_cast<int32_t>(hour - CAL_HOURS_START) * span /
+                             (CAL_HOURS_END - CAL_HOURS_START);
+      // Linha proxima do ultimo digito do horario, sem mover os eventos.
+      constexpr int16_t hourLineX = 437;
+      gfx.drawFastHLine(hourLineX, yy, blockRight - hourLineX, GxEPD_LIGHTGREY);
+      // Inclui o rotulo 20:00, com margem suficiente ate a base do card.
+      char stamp[6];
+      snprintf(stamp, sizeof(stamp), "%02d:00", hour);
+      // QFNT usa linha de base: +7 centraliza a altura visual de 14px em yy.
+      // X=397 recupera a posicao dos horarios antes do deslocamento de 10 px.
+      font14.drawText(gfx, 397, yy + 7, String(stamp),
+                      GxEPD_WHITE, top, bottom);
+    }
+
+    // Ordena eventos por inicio, detecta conflitos reais (inclusive parciais)
+    // e distribui em colunas. Eventos sem conflito mantem largura total.
+    struct TimedBlock
+    {
+      const CalendarEvent *event;
+      int startMinutes;
+      int endMinutes;
+      uint8_t column;
+      uint8_t totalColumns;
+
+      TimedBlock(const CalendarEvent *src, int start, int end)
+          : event(src), startMinutes(start), endMinutes(end),
+            column(0), totalColumns(1) {}
+    };
+    std::vector<TimedBlock> blocks;
+    blocks.reserve(selected.events.size());
+    for (const CalendarEvent &event : selected.events)
+    {
+      if (event.allDay)
+        continue;
+      const int start = calendarClockMinutes(event.start);
+      const int finish = calendarClockMinutes(event.end);
+      if (start < 0 || finish <= start)
+        continue;
+      if (finish <= CAL_HOURS_START * 60 || start >= CAL_HOURS_END * 60)
+        continue;
+      blocks.emplace_back(&event,
+                          std::max<int>(CAL_HOURS_START * 60, start),
+                          std::min<int>(CAL_HOURS_END * 60, finish));
+    }
+
+    // Em inicios iguais, posiciona primeiro o evento mais longo.
+    // Isso evita que eventos com o mesmo inicio troquem de coluna
+    // dependendo da ordem em que vieram do Google Calendar.
+    std::sort(blocks.begin(), blocks.end(),
+              [](const TimedBlock &a, const TimedBlock &b)
+              {
+                if (a.startMinutes != b.startMinutes)
+                  return a.startMinutes < b.startMinutes;
+                return a.endMinutes > b.endMinutes;
+              });
+
+    for (size_t groupBegin = 0; groupBegin < blocks.size();)
+    {
+      // Uma cadeia de eventos sobrepostos forma um grupo de colunas.
+      // Horarios que apenas encostam (termino == inicio) NAO se sobrepoem.
+      size_t groupEnd = groupBegin + 1;
+      int latestEnd = blocks[groupBegin].endMinutes;
+      while (groupEnd < blocks.size() && blocks[groupEnd].startMinutes < latestEnd)
+      {
+        latestEnd = std::max(latestEnd, blocks[groupEnd].endMinutes);
+        ++groupEnd;
+      }
+
+      std::vector<int> busyUntil;
+      for (size_t j = groupBegin; j < groupEnd; ++j)
+      {
+        size_t freeColumn = 0;
+        while (freeColumn < busyUntil.size() && busyUntil[freeColumn] > blocks[j].startMinutes)
+          ++freeColumn;
+        if (freeColumn == busyUntil.size())
+          busyUntil.push_back(blocks[j].endMinutes);
+        else
+          busyUntil[freeColumn] = blocks[j].endMinutes;
+        blocks[j].column = static_cast<uint8_t>(freeColumn);
+      }
+      const uint8_t columns = static_cast<uint8_t>(busyUntil.size());
+      for (size_t j = groupBegin; j < groupEnd; ++j)
+        blocks[j].totalColumns = columns;
+      groupBegin = groupEnd;
+    }
+
+    constexpr int16_t EVENT_GAP = 3;
+    const int16_t availableWidth = blockRight - blockX;
+    for (const TimedBlock &block : blocks)
+    {
+      const int16_t y0 = timelineTop +
+                         static_cast<int32_t>(block.startMinutes - CAL_HOURS_START * 60) * span /
+                             ((CAL_HOURS_END - CAL_HOURS_START) * 60);
+      const int16_t y1 = timelineTop +
+                         static_cast<int32_t>(block.endMinutes - CAL_HOURS_START * 60) * span /
+                             ((CAL_HOURS_END - CAL_HOURS_START) * 60);
+      const int16_t height = std::max<int16_t>(19, y1 - y0);
+      const int16_t y = std::min<int16_t>(timelineBottom - height, y0);
+
+      // Calcula as bordas como fracoes da largura total para nao perder
+      // pixels por arredondamento (1 evento: 315px; 2: ~156px; 3: ~103px).
+      const int16_t left = blockX +
+                           static_cast<int32_t>(block.column) * availableWidth / block.totalColumns;
+      const int16_t right = blockX +
+                            static_cast<int32_t>(block.column + 1) * availableWidth / block.totalColumns -
+                            (block.column + 1 < block.totalColumns ? EVENT_GAP : 0);
+      const int16_t width = right - left;
+      if (width < 12)
+        continue;
+
+      // Mantem o mesmo visual de borda escura com interior branco.
+      gfx.fillRoundRect(left, y, width, height, 4, GxEPD_DARKGREY);
+      gfx.fillRoundRect(left + 3, y + 2, width - 5,
+                        std::max<int16_t>(1, height - 4), 3, GxEPD_WHITE);
+
+      const String clockRange = block.event->start + "-" + block.event->end;
+      if (block.totalColumns == 1)
+      {
+        // Sem sobreposicoes: preserva o titulo e horario na mesma linha.
+        const int16_t timeW = font14.textWidth(clockRange);
+        const int16_t titleW = width - timeW - 24;
+        const int16_t textY = y + std::min<int16_t>(height - 4, 18);
+        if (titleW >= 14)
+          font16.drawText(gfx, left + 10, textY,
+                          calendarFitText(font16, block.event->title, titleW),
+                          GxEPD_WHITE, top, bottom);
+        font14.drawText(gfx, right - timeW - 6, textY,
+                        clockRange, GxEPD_WHITE, top, bottom);
+      }
+      else
+      {
+        // Com 2 ou 3 colunas, titulo e horario usam linhas separadas.
+        // Em eventos curtos ha espaco para apenas uma linha: prioriza titulo.
+        const int16_t insideX = left + 5;
+        const int16_t insideW = width - 10;
+        if (height >= 34)
+        {
+          font14.drawText(gfx, insideX, y + 15,
+                          calendarFitText(font14, block.event->title, insideW),
+                          GxEPD_WHITE, top, bottom);
+          font14.drawText(gfx, insideX, y + 30,
+                          calendarFitText(font14, clockRange, insideW),
+                          GxEPD_WHITE, top, bottom);
+        }
+        else
+        {
+          font14.drawText(gfx, insideX, y + std::min<int16_t>(height - 3, 15),
+                          calendarFitText(font14, block.event->title, insideW),
+                          GxEPD_WHITE, top, bottom);
+        }
+      }
+    }
+  }
+
+  void drawCalendarPage(PageCanvas &gfx, Icons &icons,
+                        const CalendarDay &selected,
+                        const std::vector<CalendarBirthday> &birthdays,
+                        int16_t top, int16_t bottom)
+  {
+    // O fundo ja veio do /image-calendar.bin (ou cinza de fallback).
+    gfx.fillRoundRect(CAL_LEFT_X, CAL_LEFT_Y, CAL_LEFT_W, CAL_LEFT_H,
+                      10, GxEPD_WHITE);
+    gfx.fillRoundRect(CAL_RIGHT_X, CAL_RIGHT_Y, CAL_RIGHT_W, CAL_RIGHT_H,
+                      10, GxEPD_WHITE);
+    drawCalendarMonth(gfx, selected, top, bottom);
+    drawCalendarAgenda(gfx, icons, selected, birthdays, top, bottom);
+  }
+
+  // Exibe tempos em formato humano sem truncar horas acima de 255.
+  String screenDuration(uint32_t seconds)
+  {
+    if (seconds == 0) return "0min";
+    const uint32_t hours = seconds / 3600;
+    const uint32_t minutes = (seconds % 3600) / 60;
+    if (!hours) return String(std::max<uint32_t>(1, minutes)) + "min";
+    return String(hours) + "h" + (minutes ? String(minutes) + "m" : String());
+  }
+
+  String screenAppLabel(const String &raw)
+  {
+    if (raw == "vscode") return "VS Code";
+    if (raw == "chromeOutros") return "Chrome";
+    if (raw == "chatgpt") return "ChatGPT";
+    if (raw == "photoshop") return "Photoshop";
+    if (raw == "explorer") return "Explorador";
+    if (raw == "amazonMusic") return "Amazon Music";
+    if (raw == "whatsapp") return "WhatsApp";
+    if (raw == "youtube") return "YouTube";
+    if (raw == "netflix") return "Netflix";
+    if (raw == "mpc") return "MPC-HC";
+    if (raw == "outrosProgramas") return "Outros programas";
+    String name = raw;
+    if (name.endsWith(".exe")) name.remove(name.length() - 4);
+    if (!name.isEmpty() && name[0] >= 'a' && name[0] <= 'z')
+      name.setCharAt(0, name[0] - ('a' - 'A'));
+    return name;
+  }
+
+  void drawScreenTimeCard(PageCanvas &gfx, Icons &icons,
+                          int16_t x, uint16_t iconId, const String &title,
+                          bool hasData, uint32_t totalSeconds,
+                          const std::vector<ScreenTimeEntry> *items,
+                          int16_t top, int16_t bottom)
+  {
+    constexpr int16_t Y = 101, W = 250, H = 363;
+    gfx.fillRoundRect(x, Y, W, H, 9, GxEPD_WHITE);
+    icons.draw(gfx, iconId, x + 12, Y + 13, 48, 48, top, bottom);
+    font20.drawText(gfx, x + 68, Y + 40, title, GxEPD_WHITE, top, bottom);
+    if (!hasData)
+    {
+      if (title == "Celular")
+        font16.drawText(gfx, x + 16, Y + 95, "--", GxEPD_WHITE, top, bottom);
+      else
+        font24.drawText(gfx, x + 16, Y + 95, screenDuration(totalSeconds),
+                        GxEPD_WHITE, top, bottom);
+      gfx.drawFastHLine(x + 14, Y + 111, W - 28, GxEPD_LIGHTGREY);
+      font14.drawText(gfx, x + 15, Y + 151,
+                      title == "Celular" ? "Aguardando integração" : "Detalhes indisponíveis",
+                      GxEPD_WHITE, top, bottom);
+      return;
+    }
+
+    font24.drawText(gfx, x + 16, Y + 95, screenDuration(totalSeconds),
+                    GxEPD_WHITE, top, bottom);
+    gfx.drawFastHLine(x + 14, Y + 111, W - 28, GxEPD_LIGHTGREY);
+    if (!items || items->empty())
+    {
+      font14.drawText(gfx, x + 15, Y + 151,
+                      totalSeconds ? "Detalhes não disponíveis" : "Nenhuma atividade registrada",
+                      GxEPD_WHITE, top, bottom);
+      return;
+    }
+
+    // Ate 6 linhas por card. Cada nome fica dentro dos 250 px.
+    const size_t visible = std::min<size_t>(6, items->size());
+    for (size_t i = 0; i < visible; ++i)
+    {
+      const int16_t rowY = Y + 148 + i * 34;
+      const String duration = screenDuration((*items)[i].seconds);
+      const int16_t durationW = font14.textWidth(duration);
+      const int16_t nameWidth = W - durationW - 35;
+      const String name = calendarFitText(font14, screenAppLabel((*items)[i].name), nameWidth);
+      font14.drawText(gfx, x + 15, rowY, name, GxEPD_WHITE, top, bottom);
+      font14.drawText(gfx, x + W - durationW - 13, rowY,
+                      duration, GxEPD_WHITE, top, bottom);
+      if (i + 1 < visible)
+        gfx.drawFastHLine(x + 15, rowY + 8, W - 30, GxEPD_LIGHTGREY);
+    }
+    if (items->size() > visible)
+      font14.drawText(gfx, x + 15, Y + 343, "+ mais aplicativos",
+                      GxEPD_WHITE, top, bottom);
+  }
+
+  void drawScreenTimePage(PageCanvas &gfx, Icons &icons,
+                          const ScreenTimeDetails &details,
+                          int16_t top, int16_t bottom)
+  {
+    // O fundo ja veio do /image-calendar.bin (ou cinza de fallback).
+    // Canto superior esquerdo reservado para o toque invisivel de voltar.
+    // Card de total: sem o titulo grande nem a data no cabecalho.
+    // O celular ainda nao e coletado. Somamos seu tempo apenas quando
+    // phoneDataAvailable estiver verdadeiro; nunca inventamos minutos.
+    constexpr int16_t TOTAL_X = 656;
+    constexpr int16_t TOTAL_Y = 16;
+    constexpr int16_t TOTAL_W = 132;
+    constexpr int16_t TOTAL_H = 66;
+    gfx.fillRoundRect(TOTAL_X, TOTAL_Y, TOTAL_W, TOTAL_H, 7, GxEPD_WHITE);
+    const String totalLabel = "Total";
+    font14.drawText(gfx, TOTAL_X + (TOTAL_W - font14.textWidth(totalLabel)) / 2,
+                    TOTAL_Y + 23, totalLabel, GxEPD_WHITE, top, bottom);
+    const uint64_t sumSeconds = static_cast<uint64_t>(details.totalPC) +
+                                details.totalTV +
+                                (details.phoneDataAvailable ? details.totalPhone : 0);
+    const uint32_t totalSeconds = sumSeconds > 0xFFFFFFFFULL
+                                      ? 0xFFFFFFFFUL : static_cast<uint32_t>(sumSeconds);
+    const String totalText = screenDuration(totalSeconds);
+    font24.drawText(gfx, TOTAL_X + (TOTAL_W - font24.textWidth(totalText)) / 2,
+                    TOTAL_Y + 56, totalText, GxEPD_WHITE, top, bottom);
+
+    drawScreenTimeCard(gfx, icons, 12, 314, "Celular",
+                       details.phoneDataAvailable, details.totalPhone,
+                       nullptr, top, bottom);
+    drawScreenTimeCard(gfx, icons, 275, 315, "PC", details.dataAvailable,
+                       details.totalPC, &details.pc, top, bottom);
+    drawScreenTimeCard(gfx, icons, 538, 317, "TV", details.dataAvailable,
+                       details.totalTV, &details.tv, top, bottom);
+  }
+
   // Reenvia os 96 KB prontos por faixas, sem redesenhar layout nem icones.
   // A tela permanece em 4 tons e a atualizacao continua sendo total.
   bool renderFlash(const DashboardData &data, const WeatherData *weather, bool wifiConnected)
@@ -1176,7 +1757,7 @@ namespace
       drawCompactWeather(canvas, weather, icons, y, y + rows);
       drawAirQuality(canvas, data.airQuality, icons, y, y + rows);
       drawPollen(canvas, data.pollen, icons, y, y + rows);
-      drawDemoIndicators(canvas, icons, y, y + rows);
+      drawDemoIndicators(canvas, icons, data, y, y + rows);
       composeMs += millis() - t;
       t = millis();
       display.writeImage_4G(canvas.bytes(), 2, 0, y, WIDTH, rows);
@@ -1204,6 +1785,11 @@ namespace
 
 void DisplayManager::render(const DashboardData &data)
 {
+
+  Serial.printf(
+      "DISPLAY RECEBEU: TV=%lu | PC=%lu\n",
+      (unsigned long)data.totalSecondsTV,
+      (unsigned long)data.totalSecondsPC);
   // Todas as fontes sao abertas uma unica vez e ficam disponiveis
   // tanto na geracao do cache quanto nos dois caminhos de renderizacao.
   if (!LittleFS.begin(false))
@@ -1223,14 +1809,73 @@ void DisplayManager::render(const DashboardData &data)
   endFonts();
 }
 
-void DisplayManager::show(
-    const std::vector<Habit> &habits,
-    const WeatherData *weather)
+bool DisplayManager::renderCalendar(const CalendarDay &selected,
+                                    const std::vector<CalendarBirthday> &birthdays)
 {
-  DashboardData data;
-  data.habits = &habits;
-  data.weather = weather;
-  render(data);
+  if (!LittleFS.begin(false) || !beginFonts())
+  {
+    Serial.println("CALENDAR DISPLAY: fontes existentes indisponiveis.");
+    return false;
+  }
+  // Fontes adicionais sao usadas APENAS pela agenda. Se nao foram
+  // enviadas ainda, ha fallback: o dashboard continua intacto.
+  // O calendario agora usa somente as fontes 14, 16 e 32 ja abertas.
+  Icons icons;
+  if (!icons.begin())
+    Serial.println("CALENDAR DISPLAY: /icons.bin ausente; icone 323 nao sera exibido.");
+
+  SPI.begin(18, 19, 23, 27);
+  display.init(115200);
+  display.setRotation(0);
+  File background = openDetailsBackground();
+  for (int16_t y = 0; y < HEIGHT; y += STRIPE)
+  {
+    const int16_t rows = std::min<int16_t>(STRIPE, HEIGHT - y);
+    canvas.beginPage(y, rows);
+    drawDetailsBackgroundPage(canvas, background, rows);
+    drawCalendarPage(canvas, icons, selected, birthdays, y, y + rows);
+    display.writeImage_4G(canvas.bytes(), 2, 0, y, WIDTH, rows);
+  }
+  background.close();
+  display.refresh(false);
+  display.epd2.hibernate();
+  icons.end();
+  endFonts();
+  Serial.printf("CALENDAR DISPLAY: %s, 2 cards sobre fundo opcional.\n",
+                selected.date.c_str());
+  return true;
+}
+
+bool DisplayManager::renderScreenTimeDetails(const ScreenTimeDetails &details)
+{
+  if (!LittleFS.begin(false) || !beginFonts())
+  {
+    Serial.println("SCREEN DETAILS DISPLAY: fontes indisponiveis.");
+    return false;
+  }
+  Icons icons;
+  if (!icons.begin())
+    Serial.println("SCREEN DETAILS DISPLAY: /icons.bin indisponivel; mantendo textos.");
+
+  SPI.begin(18, 19, 23, 27);
+  display.init(115200);
+  display.setRotation(0);
+  File background = openDetailsBackground();
+  for (int16_t y = 0; y < HEIGHT; y += STRIPE)
+  {
+    const int16_t rows = std::min<int16_t>(STRIPE, HEIGHT - y);
+    canvas.beginPage(y, rows);
+    drawDetailsBackgroundPage(canvas, background, rows);
+    drawScreenTimePage(canvas, icons, details, y, y + rows);
+    display.writeImage_4G(canvas.bytes(), 2, 0, y, WIDTH, rows);
+  }
+  background.close();
+  display.refresh(false);
+  display.epd2.hibernate();
+  icons.end();
+  endFonts();
+  Serial.println("SCREEN DETAILS DISPLAY: 3 cards exibidos.");
+  return true;
 }
 
 int DisplayManager::habitIndexAt(int16_t x, int16_t y, size_t habitCount) const

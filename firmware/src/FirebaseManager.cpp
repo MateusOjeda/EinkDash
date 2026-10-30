@@ -6,6 +6,7 @@
 #include <mbedtls/base64.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <stdlib.h>
 
 void FirebaseManager::begin(const char *apiKey,
                             const char *projectId,
@@ -216,6 +217,303 @@ bool FirebaseManager::syncSettings(const char *documentPath)
       latitude,
       longitude);
 
+  return true;
+}
+
+bool FirebaseManager::readScreenTime(
+    const char *deviceId,
+    const char *date,
+    uint32_t &totalTV,
+    uint32_t &totalPC)
+{
+  if (!Firebase.ready())
+  {
+    Serial.println("SCREEN TIME: Firebase indisponivel.");
+    return false;
+  }
+
+  String path = "screenTime/";
+  path += deviceId;
+  path += "/days/";
+  path += date;
+
+  Serial.printf("SCREEN TIME: consultando %s\n", path.c_str());
+
+  const char *mask = "totalSecondsTV,totalSecondsPC";
+
+  if (!Firebase.Firestore.getDocument(
+          &_fbdo,
+          _projectId.c_str(),
+          "",
+          path.c_str(),
+          mask))
+  {
+    // Dia sem registros ainda.
+    if (_fbdo.httpCode() == 404)
+    {
+      totalTV = 0;
+      totalPC = 0;
+      Serial.println("SCREEN TIME: sem registros hoje.");
+      return true;
+    }
+
+    Serial.printf(
+        "SCREEN TIME: erro: %s\n",
+        _fbdo.errorReason().c_str());
+
+    return false;
+  }
+
+  FirebaseJson json;
+  json.setJsonData(_fbdo.payload());
+
+  FirebaseJsonData tv;
+  FirebaseJsonData pc;
+
+  if (!json.get(tv, "fields/totalSecondsTV/integerValue") ||
+      !json.get(pc, "fields/totalSecondsPC/integerValue"))
+  {
+    Serial.println("SCREEN TIME: campos ausentes.");
+    return false;
+  }
+
+  totalTV = (uint32_t)tv.to<String>().toInt();
+  totalPC = (uint32_t)pc.to<String>().toInt();
+
+  Serial.printf(
+      "SCREEN TIME: TV=%lu s | PC=%lu s\n",
+      (unsigned long)totalTV,
+      (unsigned long)totalPC);
+
+  return true;
+}
+
+// Converte campos dinâmicos da estrutura Firestore "pc"/"tv" em lista.
+// Ex.: fields/pc/mapValue/fields/vscode/integerValue = "5400".
+// A quantidade em RAM fica limitada aos 24 maiores aplicativos por grupo.
+static void parseScreenTimeGroup(FirebaseJson &document,
+                                 const char *field,
+                                 std::vector<ScreenTimeEntry> &out)
+{
+  FirebaseJsonData map;
+  const String path = String("fields/") + field + "/mapValue/fields";
+  if (!document.get(map, path)) return;
+
+  FirebaseJson fields;
+  if (!fields.setJsonData(map.stringValue)) return;
+
+  const size_t count = fields.iteratorBegin();
+  for (size_t i = 0; i < count; ++i)
+  {
+    int type = 0;
+    String key, unusedValue;
+    fields.iteratorGet(i, type, key, unusedValue);
+    if (key.isEmpty() || key == "totalSeconds") continue;
+
+    FirebaseJsonData seconds;
+    if (!fields.get(seconds, key + "/integerValue")) continue;
+    const uint32_t value = static_cast<uint32_t>(strtoul(seconds.to<String>().c_str(), nullptr, 10));
+    if (value == 0) continue;
+    ScreenTimeEntry item;
+    item.name = key;
+    item.seconds = value;
+    out.push_back(std::move(item));
+  }
+  fields.iteratorEnd();
+
+  std::sort(out.begin(), out.end(), [](const ScreenTimeEntry &a, const ScreenTimeEntry &b)
+            { return a.seconds > b.seconds; });
+  // So os maiores sao necessarios para o card; evita manter dezenas de apps.
+  if (out.size() > 24) out.resize(24);
+}
+
+bool FirebaseManager::readScreenTimeDetails(const char *deviceId,
+                                             const char *date,
+                                             ScreenTimeDetails &out)
+{
+  if (!deviceId || !date || strlen(date) != 10 ||
+      WiFi.status() != WL_CONNECTED || !awaitReady(5000))
+    return false;
+
+  const String path = String("screenTime/") + deviceId + "/days/" + date;
+  _serial->printf("SCREEN DETAILS: toque -> consultando %s\n", path.c_str());
+  // Campos filtrados: nao busca metadados nao utilizados.
+  if (!Firebase.Firestore.getDocument(&_fbdo, _projectId.c_str(), "",
+                                      path.c_str(), "pc,tv,totalSecondsPC,totalSecondsTV"))
+  {
+    if (_fbdo.httpCode() == 404)
+    {
+      ScreenTimeDetails empty;
+      empty.date = date;
+      empty.dataAvailable = true;
+      out = std::move(empty);
+      return true;
+    }
+    _serial->printf("SCREEN DETAILS: HTTP %d: %s\n",
+                    _fbdo.httpCode(), _fbdo.errorReason().c_str());
+    return false;
+  }
+
+  FirebaseJson document;
+  if (!document.setJsonData(_fbdo.payload()))
+  {
+    _serial->println("SCREEN DETAILS: JSON invalido.");
+    return false;
+  }
+  ScreenTimeDetails fresh;
+  fresh.date = date;
+  fresh.dataAvailable = true;
+  FirebaseJsonData total;
+  if (document.get(total, "fields/totalSecondsPC/integerValue"))
+    fresh.totalPC = static_cast<uint32_t>(strtoul(total.to<String>().c_str(), nullptr, 10));
+  if (document.get(total, "fields/totalSecondsTV/integerValue"))
+    fresh.totalTV = static_cast<uint32_t>(strtoul(total.to<String>().c_str(), nullptr, 10));
+
+  parseScreenTimeGroup(document, "pc", fresh.pc);
+  parseScreenTimeGroup(document, "tv", fresh.tv);
+  _serial->printf("SCREEN DETAILS: %u categorias PC, %u TV.\n",
+                  (unsigned)fresh.pc.size(), (unsigned)fresh.tv.size());
+  out = std::move(fresh);
+  return true;
+}
+
+// Um documento por data, com no maximo seis eventos materializados na RAM.
+// A estrutura corresponde diretamente ao Apps Script: fields/events/arrayValue.
+bool FirebaseManager::readCalendarDay(const char *date, CalendarDay &out)
+{
+  if (!date || strlen(date) != 10 || date[4] != '-' || date[7] != '-')
+    return false;
+  if (WiFi.status() != WL_CONNECTED || !awaitReady(5000))
+  {
+    _serial->println("CALENDAR: Wi-Fi ou Firebase indisponivel.");
+    return false;
+  }
+
+  const String path = String("calendar/") + date;
+  _serial->printf("CALENDAR: consultando %s\n", path.c_str());
+  if (!Firebase.Firestore.getDocument(
+          &_fbdo, _projectId.c_str(), "", path.c_str(), "events"))
+  {
+    if (_fbdo.httpCode() == 404)
+    {
+      out.date = date;
+      out.found = false;
+      out.events.clear();
+      out.hasMore = false;
+      _serial->println("CALENDAR: documento ainda nao sincronizado.");
+      return true;
+    }
+    _serial->printf("CALENDAR: erro HTTP %d: %s\n",
+                    _fbdo.httpCode(), _fbdo.errorReason().c_str());
+    return false;
+  }
+
+  FirebaseJson json;
+  if (!json.setJsonData(_fbdo.payload()))
+  {
+    _serial->println("CALENDAR: resposta JSON invalida.");
+    return false;
+  }
+
+  CalendarDay incoming;
+  incoming.date = date;
+  incoming.found = true;
+  incoming.events.reserve(6);
+
+  // Os dias vazios podem ter arrayValue sem o campo 'values'.
+  for (uint8_t i = 0; i < 7; ++i)
+  {
+    const String base = String("fields/events/arrayValue/values/[") + String(i) +
+                        "]/mapValue/fields/";
+    FirebaseJsonData title;
+    if (!json.get(title, base + "title/stringValue"))
+      break;
+    if (i == 6)
+    {
+      incoming.hasMore = true;
+      break;
+    }
+    CalendarEvent event;
+    event.title = title.to<String>();
+    FirebaseJsonData start, end, allDay;
+    if (json.get(start, base + "start/stringValue"))
+      event.start = start.to<String>();
+    if (json.get(end, base + "end/stringValue"))
+      event.end = end.to<String>();
+    if (json.get(allDay, base + "allDay/booleanValue"))
+      event.allDay = allDay.to<bool>();
+    incoming.events.push_back(std::move(event));
+  }
+
+  out = std::move(incoming);
+  _serial->printf("CALENDAR: %u evento(s)%s.\n",
+                  (unsigned)out.events.size(),
+                  out.hasMore ? " (ha mais)" : "");
+  return true;
+}
+
+// Consulta pequena: apenas o dia/mes da data selecionada, birthdays/MM-DD.
+// A ausencia do documento significa que nao ha aniversarios naquele dia.
+bool FirebaseManager::readBirthdaysForDay(const char *isoDate,
+                                          std::vector<CalendarBirthday> &out)
+{
+  if (!isoDate || strlen(isoDate) != 10 || isoDate[4] != '-' || isoDate[7] != '-')
+    return false;
+  const int month = String(isoDate).substring(5, 7).toInt();
+  const int day = String(isoDate).substring(8, 10).toInt();
+  if (month < 1 || month > 12 || day < 1 || day > 31)
+    return false;
+  if (WiFi.status() != WL_CONNECTED || !awaitReady(5000))
+    return false;
+
+  char key[6];
+  snprintf(key, sizeof(key), "%02d-%02d", month, day);
+  const String path = String("birthdays/") + key;
+  _serial->printf("BIRTHDAYS: consultando %s\n", path.c_str());
+  if (!Firebase.Firestore.getDocument(
+          &_fbdo, _projectId.c_str(), "", path.c_str(), "names"))
+  {
+    if (_fbdo.httpCode() == 404)
+    {
+      out.clear();
+      _serial->println("BIRTHDAYS: nenhum aniversario nesta data.");
+      return true;
+    }
+    _serial->printf("BIRTHDAYS: erro HTTP %d: %s\n",
+                    _fbdo.httpCode(), _fbdo.errorReason().c_str());
+    return false;
+  }
+
+  FirebaseJson json;
+  if (!json.setJsonData(_fbdo.payload()))
+  {
+    _serial->println("BIRTHDAYS: JSON invalido.");
+    return false;
+  }
+  FirebaseJsonData field;
+  if (!json.get(field, "fields/names/arrayValue"))
+  {
+    _serial->println("BIRTHDAYS: campo names ausente no documento.");
+    return false;
+  }
+
+  std::vector<CalendarBirthday> incoming;
+  for (uint8_t i = 0; i < 32; ++i)
+  {
+    const String fieldPath = String("fields/names/arrayValue/values/[") +
+                             String(i) + "]/stringValue";
+    FirebaseJsonData value;
+    if (!json.get(value, fieldPath))
+      break;
+    CalendarBirthday birthday;
+    birthday.name = value.to<String>();
+    birthday.month = static_cast<uint8_t>(month);
+    birthday.day = static_cast<uint8_t>(day);
+    incoming.push_back(std::move(birthday));
+  }
+  out.swap(incoming);
+  _serial->printf("BIRTHDAYS: %u aniversario(s) em %s.\n",
+                  (unsigned)out.size(), key);
   return true;
 }
 
