@@ -5,13 +5,10 @@
 #include "Habit.h"
 #include "DashboardData.h"
 
-class WeatherManager;
+struct WeatherData;
 
 class DisplayManager {
 public:
-  // Mantem a previsao disponivel inclusive durante redraws do touch.
-  void attachWeather(const WeatherManager* weather) { _weather = weather; }
-
   // O cabecalho exibe o icone de Wi-Fi cortado quando false.
   // Aplicado na proxima renderizacao do dashboard.
   void setWifiConnected(bool connected) { _wifiConnected = connected; }
@@ -27,10 +24,11 @@ public:
   int habitIndexAt(int16_t x, int16_t y, size_t habitCount) const;
 
   // Compatibilidade com o teste antigo (nao calcula dias sem todayISO).
-  void showHabits(const std::vector<Habit>& habits);
+  void show(
+    const std::vector<Habit>& habits,
+    const WeatherData* weather);
 
 private:
-  const WeatherManager* _weather = nullptr; // gerenciado pelo main.cpp
   bool _wifiConnected = true;
 };
 

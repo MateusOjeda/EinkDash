@@ -5,3 +5,5 @@
 .vscode/ipch
 
 Secrets.h
+
+WeatherSecrets.h

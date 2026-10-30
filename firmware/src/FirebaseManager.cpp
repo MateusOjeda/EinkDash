@@ -5,6 +5,7 @@
 #include <utility>
 #include <mbedtls/base64.h>
 #include <esp_heap_caps.h>
+#include <math.h>
 
 void FirebaseManager::begin(const char *apiKey,
                             const char *projectId,
@@ -140,6 +141,81 @@ bool FirebaseManager::decodeIcon(const String &base64, Habit &habit)
   hashBytes(reinterpret_cast<const uint8_t *>(&habit.iconHeight), sizeof(habit.iconHeight));
   hashBytes(habit.iconBytes.data(), habit.iconBytes.size());
   habit.iconHash = h;
+  return true;
+}
+
+bool FirebaseManager::syncSettings(const char *documentPath)
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    _serial->println("SETTINGS: Wi-Fi desconectado.");
+    return false;
+  }
+
+  if (!documentPath || !documentPath[0])
+  {
+    _serial->println("SETTINGS: caminho do documento invalido.");
+    return false;
+  }
+
+  if (!awaitReady(5000))
+    return false;
+
+  _serial->println("SETTINGS: buscando configuracoes...");
+
+  // Uma unica requisicao sincrona ao Firestore.
+  if (!Firebase.Firestore.getDocument(
+          &_fbdo,
+          _projectId.c_str(),
+          "",
+          documentPath,
+          ""))
+  {
+    _serial->print("SETTINGS: erro: ");
+    _serial->println(_fbdo.errorReason());
+    return false;
+  }
+
+  FirebaseJson json;
+
+  if (!json.setJsonData(_fbdo.payload()))
+  {
+    _serial->println("SETTINGS: JSON invalido.");
+    return false;
+  }
+
+  FirebaseJsonData latData;
+  FirebaseJsonData lonData;
+
+  if (!json.get(latData, "fields/latitude/doubleValue") ||
+      !json.get(lonData, "fields/longitude/doubleValue"))
+  {
+    _serial->println("SETTINGS: latitude ou longitude ausente.");
+    return false;
+  }
+
+  const double latitude = latData.to<double>();
+  const double longitude = lonData.to<double>();
+
+  if (!isfinite(latitude) || !isfinite(longitude) ||
+      latitude < -90 || latitude > 90 ||
+      longitude < -180 || longitude > 180)
+  {
+    _serial->println("SETTINGS: coordenadas invalidas.");
+    return false;
+  }
+
+  // So substitui os dados em RAM se tudo estiver correto.
+  _settings.latitude = latitude;
+  _settings.longitude = longitude;
+  _settings.hasLocation = true;
+
+  _serial->println("SETTINGS: configuracoes carregadas.");
+  _serial->printf(
+      "SETTINGS: latitude=%.6f longitude=%.6f\n",
+      latitude,
+      longitude);
+
   return true;
 }
 

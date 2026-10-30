@@ -13,6 +13,8 @@
 #include <sys/time.h>
 #include "HabitTouchAsync.h"
 #include "WeatherManager.h"
+#include "AirQualityManager.h"
+#include "PollenManager.h"
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -24,6 +26,8 @@ DisplayManager displayManager;
 TouchManager touchManager;
 HabitTouchAsync habitTouchAsync(firebaseManager, displayManager);
 WeatherManager weatherManager;
+AirQualityManager airQualityManager;
+PollenManager pollenManager;
 
 // Guarda a hora da ultima previsao ja desenhada na tela.
 char lastWeatherDrawn[17] = {};
@@ -59,6 +63,17 @@ bool renderCurrentDashboard()
   DashboardData dashboard;
   dashboard.todayISO = iso;
   dashboard.habits = &firebaseManager.getHabits();
+  dashboard.weather = weatherManager.hasData()
+                          ? &weatherManager.data()
+                          : nullptr;
+  dashboard.airQuality =
+      airQualityManager.hasData()
+          ? &airQualityManager.data()
+          : nullptr;
+  dashboard.pollen =
+      pollenManager.hasData()
+          ? &pollenManager.data()
+          : nullptr;
   displayManager.setWifiConnected(displayWifiConnected());
   displayManager.render(dashboard); // sem nova consulta de rede
 
@@ -89,7 +104,6 @@ void handlePrivacyCorner()
                      ? "PRIVACIDADE: ocultacao solicitada."
                      : "PRIVACIDADE: ocultacao cancelada.");
 }
-
 
 void printMemory(const char *etapa)
 {
@@ -328,6 +342,17 @@ bool syncDashboard()
   DashboardData dashboard;
 
   dashboard.habits = &firebaseManager.getHabits();
+  dashboard.weather = weatherManager.hasData()
+                          ? &weatherManager.data()
+                          : nullptr;
+  dashboard.airQuality =
+      airQualityManager.hasData()
+          ? &airQualityManager.data()
+          : nullptr;
+  dashboard.pollen =
+      pollenManager.hasData()
+          ? &pollenManager.data()
+          : nullptr;
 
   // ==========================================================
   // DATA ATUAL
@@ -595,6 +620,41 @@ void setup()
     return;
   }
 
+  // ============================================================
+  // CONFIGURACOES DO FIRESTORE
+  // ============================================================
+
+  const bool settingsLoaded =
+      firebaseManager.syncSettings("settings/dashboard");
+
+  const DeviceSettings &settings = firebaseManager.getSettings();
+
+  if (settingsLoaded && settings.hasLocation)
+  {
+    Serial.printf(
+        "LOCALIZACAO: %.6f, %.6f\n",
+        settings.latitude,
+        settings.longitude);
+
+    if (airQualityManager.begin())
+      airQualityManager.fetchAndLog(
+          settings.latitude, settings.longitude);
+
+    if (pollenManager.begin())
+      pollenManager.fetchAndLog(
+          settings.latitude, settings.longitude);
+
+    if (weatherManager.begin())
+      weatherManager.fetchAndLog(
+          settings.latitude, settings.longitude);
+  }
+  else
+  {
+    Serial.println(
+        "ENV: sem coordenadas validas no Firestore. "
+        "Consultas ambientais ignoradas.");
+  }
+
   Serial.println("EINKDASH: Firebase autenticado.");
 
   Serial.printf(
@@ -609,31 +669,11 @@ void setup()
   // INICIALIZAR TOUCH, PREVISAO E DASHBOARD
   // ==========================================================
 
-  // O DisplayManager usa a previsao nas renderizacoes normais
-  // e tambem nas renderizacoes disparadas por um toque.
-  displayManager.attachWeather(&weatherManager);
-
   // Pinos corretos do GT911 nesta placa: SDA=32, SCL=33.
   if (touchManager.begin(32, 33))
   {
     touchManager.setTransform(false, false, false);
     Serial.println("TOUCH: pronto para testes de coordenadas.");
-  }
-
-  // Busca inicial ANTES da task permanente do Firebase,
-  // preservando a memoria necessaria para o HTTPS.
-  if (weatherManager.begin())
-  {
-    weatherManager.poll(true);
-
-    const uint32_t start = millis();
-
-    while (!weatherManager.hasData() &&
-           millis() - start < 12000)
-    {
-      weatherManager.poll(false);
-      delay(30);
-    }
   }
 
   // A primeira renderizacao ja inclui os dados meteorologicos
@@ -661,71 +701,6 @@ void setup()
 
 void loop()
 {
-#ifdef EINKDASH_DEV_SERIAL_PROVISIONING
-
-  if (Serial.available())
-  {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-
-    // ========================================================
-    // CONFIGURAR WI-FI
-    // ========================================================
-
-    if (cmd == "wifi")
-    {
-      if (habitTouchAsync.hasPending())
-      {
-        Serial.println("WIFI: aguarde a conclusao das gravacoes de habitos.");
-      }
-      else
-      {
-        onTouchConfigureWiFi();
-      }
-    }
-
-    // ========================================================
-    // SINCRONIZACAO MANUAL
-    // ========================================================
-
-    else if (cmd == "weather")
-    {
-      weatherManager.requestNow();
-    }
-    else if (cmd == "iconoff")
-    {
-      forceOfflineIcon = true;
-      iconNeedsRedraw = true;
-      Serial.println("ICONE: simulando Wi-Fi desconectado (Wi-Fi continua ativo).");
-    }
-    else if (cmd == "iconauto")
-    {
-      forceOfflineIcon = false;
-      iconNeedsRedraw = true;
-      Serial.println("ICONE: voltando ao estado real do Wi-Fi.");
-    }
-
-    else if (cmd == "sync")
-    {
-      if (habitTouchAsync.hasPending())
-      {
-        Serial.println("SYNC: aguarde a conclusao das gravacoes de habitos.");
-      }
-      else if (WiFi.status() != WL_CONNECTED)
-      {
-        Serial.println("EINKDASH: Wi-Fi desconectado.");
-      }
-      else
-      {
-        Serial.println("EINKDASH: sincronizacao manual...");
-        if (syncClock())
-          syncDashboard();
-      }
-    }
-  }
-
-#endif
-
   habitTouchAsync.poll(); // processar confirmacoes/falhas do Firebase
 
   // A data muda sem reconstruir a imagem-base. Um refresh so e pedido
@@ -740,12 +715,11 @@ void loop()
 
   // Busca meteo em background a cada 60 min (falha: retry em 5 min).
   // Evita iniciar nova requisicao enquanto ha gravacoes de habitos pendentes.
-  weatherManager.poll(!habitTouchAsync.hasPending());
   TouchPointEink touch;
   if (touchManager.readTap(touch))
   {
-    // O canto superior esquerdo funciona no dashboard e na foto.
-    if (touch.x >= 0 && touch.x < 90 && touch.y >= 0 && touch.y < 50)
+    // O canto superior direito funciona no dashboard e na foto.
+    if (touch.x >= 710 && touch.x < 800 && touch.y >= 0 && touch.y < 50)
       handlePrivacyCorner();
     else if (!privacyMode && !privacyRequested)
       habitTouchAsync.handleTap(touch);
@@ -774,40 +748,8 @@ void loop()
       !habitTouchAsync.hasPending())
   {
     Serial.println("DISPLAY: estado da rede mudou; atualizando cabecalho.");
-    if (renderCurrentDashboard()) iconNeedsRedraw = false;
-  }
-
-  if (!privacyMode && !privacyRequested &&
-      !habitTouchAsync.hasPending() && weatherManager.hasData())
-  {
-    const WeatherData &w = weatherManager.data();
-
-    if (w.observationTime[0] != '\0' &&
-        strcmp(lastWeatherDrawn, w.observationTime) != 0)
-    {
-
-      struct tm now{};
-
-      if (getLocalTime(&now, 1000))
-      {
-        char iso[11];
-
-        if (strftime(iso, sizeof(iso), "%Y-%m-%d", &now))
-        {
-          DashboardData dashboard;
-          dashboard.todayISO = iso;
-          dashboard.habits = &firebaseManager.getHabits();
-
-          Serial.println("DISPLAY: nova previsao, atualizando card do clima.");
-
-          displayManager.setWifiConnected(displayWifiConnected());
-          displayManager.render(dashboard);
-
-          snprintf(lastWeatherDrawn, sizeof(lastWeatherDrawn),
-                   "%s", w.observationTime);
-        }
-      }
-    }
+    if (renderCurrentDashboard())
+      iconNeedsRedraw = false;
   }
 
   delay(50);

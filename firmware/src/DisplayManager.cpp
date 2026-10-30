@@ -11,6 +11,8 @@
 #include "Icons.h"
 #include "WeatherIconIds.h"
 #include "WeatherManager.h"
+#include "AirQualityManager.h"
+#include "PollenManager.h"
 #include <Adafruit_GFX.h>
 #include <string.h>
 #include <esp_heap_caps.h>
@@ -21,15 +23,59 @@ static GxEPD2_4G_4G<GxEPD2_750_GDEY075T7, 8> display(
 static FlashManager flash; // compartilhado pelo renderizador rapido e de emergencia
 
 // Use os caminhos QFNT que ja funcionaram no seu projeto.
+// FONTES: todas ficam disponiveis em TODAS as funcoes deste arquivo.
+// Para trocar um arquivo BIN, altere apenas o caminho aqui.
 static const char *FONT_14_PATH = "/fonts/InterDisplay-SemiBold_14.bin";
-static const char *FONT_DATE_PATH = "/fonts/InterDisplay-SemiBold_20.bin";
-static const char *FONT_TITLE_PATH = "/fonts/InterDisplay-SemiBold_24.bin";
-static const char *FONT_BODY_PATH = "/fonts/InterDisplay-SemiBold_20.bin";
-static const char *FONT_HABIT_16_PATH = "/fonts/InterDisplay-SemiBold_16.bin";
+static const char *FONT_16_PATH = "/fonts/InterDisplay-SemiBold_16.bin";
+static const char *FONT_20_PATH = "/fonts/InterDisplay-SemiBold_20.bin";
+static const char *FONT_24_PATH = "/fonts/InterDisplay-SemiBold_24.bin";
 static const char *FONT_32_PATH = "/fonts/InterDisplay-SemiBold_32.bin";
 
 namespace
 {
+  // Use diretamente font14, font16, font20, font24 ou font32 onde quiser.
+  // Para adicionar outra, declare aqui e cadastre na tabela FONTS abaixo.
+  QFontGfx font14;
+  QFontGfx font16;
+  QFontGfx font20;
+  QFontGfx font24;
+  QFontGfx font32;
+
+  struct FontRegistration
+  {
+    QFontGfx *font;
+    const char *path;
+  };
+
+  static const FontRegistration FONTS[] = {
+      {&font14, FONT_14_PATH},
+      {&font16, FONT_16_PATH},
+      {&font20, FONT_20_PATH},
+      {&font24, FONT_24_PATH},
+      {&font32, FONT_32_PATH},
+  };
+
+  void endFonts()
+  {
+    for (const auto &entry : FONTS)
+      entry.font->end();
+  }
+
+  bool beginFonts()
+  {
+    // Montagem do LittleFS e feita por DisplayManager::render().
+    for (const auto &entry : FONTS)
+    {
+      if (!entry.font->begin(LittleFS, entry.path))
+      {
+        Serial.printf("DISPLAY: fonte QFNT invalida ou ausente: %s\n", entry.path);
+        endFonts();
+        return false;
+      }
+    }
+    return true;
+  }
+
   constexpr int16_t SCREEN_HEIGHT = 480;
   constexpr int16_t PAGE_HEIGHT = 8;
 
@@ -65,33 +111,75 @@ namespace
     return nullptr;
   }
 
-  void drawEmptyPanels()
+  // Cards inferiores: fundo cinza claro e 12 mini-cards BRANCOS reais.
+  // Nenhum titulo. Icones 48x48 desenhados nas dimensoes do BIN.
+  // Mini-cards inferiores com a MESMA largura: 94px em ambos os blocos.
+  // Painel de atividades: 3 colunas; sensores: 2 colunas.
+  // Margens internas de 6px, intervalos de 4px e 8px entre paineis.
+  constexpr int16_t ACT_X = 278;
+  constexpr int16_t ACT_Y = 218;
+  constexpr int16_t ACT_W = 302;
+  constexpr int16_t ACT_H = 254;
+  constexpr int16_t SENSOR_X = 588;
+  constexpr int16_t SENSOR_Y = 218;
+  constexpr int16_t SENSOR_W = 204;
+  constexpr int16_t SENSOR_H = 254;
+  constexpr int16_t ACT_TILE_X = 284;
+  constexpr int16_t ACT_TILE_STEP = 98;
+  constexpr int16_t ACT_TILE_W = 94;
+  constexpr int16_t ACT_TOP_Y = 224;
+  constexpr int16_t ACT_TOP_H = 128;
+  constexpr int16_t ACT_BOTTOM_Y = 359;
+  constexpr int16_t ACT_BOTTOM_H = 107;
+  constexpr int16_t SENSOR_TILE_X = 594;
+  constexpr int16_t SENSOR_TILE_STEP = 98;
+  constexpr int16_t SENSOR_TILE_W = 94;
+  constexpr int16_t SENSOR_TILE_Y = 224;
+  constexpr int16_t SENSOR_TILE_STEP_Y = 81;
+  constexpr int16_t SENSOR_TILE_H = 77;
+
+  void drawMetricCardBases(Adafruit_GFX &gfx)
   {
-    // Renderizador legado: mesma geometria usada pelo cache da Flash.
-    display.fillScreen(GxEPD_WHITE);
-    display.fillRect(0, 0, 800, 480, GxEPD_DARKGREY);
+    gfx.fillRoundRect(ACT_X, ACT_Y, ACT_W, ACT_H, 7, GxEPD_LIGHTGREY);
+    gfx.fillRoundRect(SENSOR_X, SENSOR_Y, SENSOR_W, SENSOR_H, 7, GxEPD_LIGHTGREY);
+    for (int col = 0; col < 3; ++col)
+    {
+      const int16_t x = ACT_TILE_X + col * ACT_TILE_STEP;
+      gfx.fillRoundRect(x, ACT_TOP_Y, ACT_TILE_W, ACT_TOP_H, 6, GxEPD_WHITE);
+      gfx.fillRoundRect(x, ACT_BOTTOM_Y, ACT_TILE_W, ACT_BOTTOM_H, 6, GxEPD_WHITE);
+    }
+    for (int row = 0; row < 3; ++row)
+      for (int col = 0; col < 2; ++col)
+        gfx.fillRoundRect(SENSOR_TILE_X + col * SENSOR_TILE_STEP,
+                          SENSOR_TILE_Y + row * SENSOR_TILE_STEP_Y,
+                          SENSOR_TILE_W, SENSOR_TILE_H, 6, GxEPD_WHITE);
+  }
 
-    display.fillRoundRect(8, 8, 262, 40, 7, GxEPD_WHITE);
-    display.fillRoundRect(HABITS_PANEL_X, HABITS_PANEL_Y,
-                          HABITS_PANEL_W, HABITS_PANEL_H, 7, GxEPD_WHITE);
-    display.fillRoundRect(278, 8, 514, 202, 7, GxEPD_WHITE);
-    display.fillRoundRect(278, 218, 264, 254, 7, GxEPD_WHITE);
-    display.fillRoundRect(550, 218, 242, 254, 7, GxEPD_WHITE);
+  // Layout estatico compartilhado: Flash W25Q16 e renderizador de emergencia.
+  // Todas as posicoes e divisorias sao definidas apenas aqui.
+  void drawBaseLayout(Adafruit_GFX &gfx)
+  {
+    gfx.fillScreen(GxEPD_DARKGREY);
+    gfx.fillRoundRect(8, 8, 262, 40, 7, GxEPD_WHITE);
+    gfx.fillRoundRect(HABITS_PANEL_X, HABITS_PANEL_Y,
+                      HABITS_PANEL_W, HABITS_PANEL_H, 7, GxEPD_WHITE);
+    gfx.fillRoundRect(278, 8, 514, 202, 7, GxEPD_WHITE);
+    drawMetricCardBases(gfx);
 
-    // Clima em tres faixas: condicao atual; indicadores; previsao de cinco dias.
-    // Nenhuma moldura interna nem preenchimento cinza.
-    // Separadores conforme mockup: clima / sensacao / max-min / UV.
-    // Condicao atual e Sens. dividem uma area, sem linha entre elas.
-    // Divisorias apenas antes de max/min e UV.
-    display.drawFastVLine(528, 20, 58, GxEPD_LIGHTGREY);
-    display.drawFastVLine(638, 20, 58, GxEPD_LIGHTGREY);
-    display.drawFastHLine(286, 84, 498, GxEPD_DARKGREY);
-    // Segunda faixa: chuva + intensidade | nuvens | vento.
-    display.drawFastVLine(502, 91, 39, GxEPD_LIGHTGREY);
-    display.drawFastVLine(630, 91, 39, GxEPD_LIGHTGREY);
-    display.drawFastHLine(286, 137, 498, GxEPD_DARKGREY);
+    // Primeira faixa: tempo | UV | AQI
+    gfx.drawFastVLine(576, 20, 58, GxEPD_LIGHTGREY);
+    gfx.drawFastVLine(682, 20, 58, GxEPD_LIGHTGREY);
+    gfx.drawFastHLine(286, 84, 498, GxEPD_DARKGREY);
+
+    // Segunda faixa: chuva | nuvens | vento | Pólen
+    gfx.drawFastVLine(475, 91, 39, GxEPD_LIGHTGREY);
+    gfx.drawFastVLine(582, 91, 39, GxEPD_LIGHTGREY);
+    gfx.drawFastVLine(692, 91, 39, GxEPD_LIGHTGREY);
+    gfx.drawFastHLine(286, 137, 498, GxEPD_DARKGREY);
+
+    // Terceira faixa: previsao de cinco dias
     for (int col = 1; col < 5; ++col)
-      display.drawFastVLine(286 + col * 100 - 4, 146, 57, GxEPD_LIGHTGREY);
+      gfx.drawFastVLine(286 + col * 100 - 4, 146, 57, GxEPD_LIGHTGREY);
   }
 
   String firstUtf8Character(const String &value)
@@ -190,10 +278,9 @@ namespace
     gfx.drawLine(x + 1, y + 1, x + 22, y + 22, ink);
   }
 
-  // Data e indicador de rede ficam na camada dinamica; a imagem-base W25Q16
-  // guarda somente o fundo branco do cabecalho. Assim, desconectar/reconectar
-  // nao obriga a reconstruir os 96 KB do cache.
-  void drawNetworkDateHeader(Adafruit_GFX &gfx, QFontGfx &dateFont,
+  // Data, calendario e indicador de rede sao desenhados dinamicamente.
+  // A imagem-base W25Q16 continua guardando apenas o fundo do cabecalho.
+  void drawNetworkDateHeader(Adafruit_GFX &gfx, Icons &icons,
                              const String &todayISO, bool wifiConnected,
                              int16_t pageTop, int16_t pageBottom)
   {
@@ -201,40 +288,70 @@ namespace
     if (visible.isEmpty())
       return;
 
+    // Icone 320: calendar_verysmall.png (24x24), no tamanho nativo.
+    // O cabeçalho vai de x=8 ate x=269; texto sempre comeca apos o icone.
+    constexpr int16_t CALENDAR_X = 16;
+    constexpr int16_t CALENDAR_Y = 16;
+    constexpr int16_t CALENDAR_SIZE = 24;
+    constexpr int16_t TEXT_X = 48;
+    constexpr int16_t TEXT_BASELINE = 35;
+    constexpr int16_t TEXT_RIGHT = 262; // margem direita de 8 px
+    constexpr int16_t WIFI_GAP = 8;
+    constexpr int16_t WIFI_ICON_W = 24;
+
+    icons.draw(gfx, 320, CALENDAR_X, CALENDAR_Y,
+               CALENDAR_SIZE, CALENDAR_SIZE, pageTop, pageBottom);
+
+    // Sem Wi-Fi: mesmo comportamento anterior (omite o dia da semana
+    // e exibe o simbolo de Wi-Fi desligado apos a data).
     if (!wifiConnected)
     {
-      // Remove apenas o dia da semana: "Quinta, 29 de Outubro" -> "29 de Outubro".
       const int comma = visible.indexOf(',');
       if (comma >= 0)
         visible = visible.substring(comma + 2);
+    }
 
-      constexpr int16_t ICON_W = 24;
-      constexpr int16_t GAP = 8;
-      const int16_t textW = dateFont.textWidth(visible);
-      const int16_t contentW = textW + GAP + ICON_W;
-      const int16_t x = 8 + (262 - contentW) / 2;
-      dateFont.drawText(gfx, x, 35, visible, GxEPD_WHITE,
-                        pageTop, pageBottom);
-      drawWifiOff(gfx, x + textW + GAP, 16);
-    }
-    else
+    const int16_t maxTextWidth = TEXT_RIGHT - TEXT_X -
+                                 (wifiConnected ? 0 : WIFI_GAP + WIFI_ICON_W);
+    if (font20.textWidth(visible) > maxTextWidth)
     {
-      if (dateFont.textWidth(visible) > 245)
+      // Primeiro tenta abreviar somente o dia da semana, mantendo
+      // o mes por extenso. Nunca deixa a data invadir a margem direita.
+      const int comma = visible.indexOf(',');
+      if (comma >= 0)
       {
-        const int comma = visible.indexOf(',');
-        if (comma > 3)
-          visible = visible.substring(0, 3) + visible.substring(comma);
+        const String weekday = visible.substring(0, comma);
+        const String shortDay = weekday == "Sábado" ? String("Sáb")
+                                                    : weekday.substring(0, 3);
+        visible = shortDay + visible.substring(comma);
       }
-      const int16_t x = 8 + (262 - dateFont.textWidth(visible)) / 2;
-      dateFont.drawText(gfx, x, 35, visible, GxEPD_WHITE,
-                        pageTop, pageBottom);
     }
+    if (font20.textWidth(visible) > maxTextWidth)
+    {
+      // Somente se ainda nao couber, retira o dia da semana.
+      const int comma = visible.indexOf(',');
+      if (comma >= 0)
+        visible = visible.substring(comma + 2);
+    }
+    if (font20.textWidth(visible) > maxTextWidth)
+    {
+      // Ultimo recurso: abrevia o mes (ex.: 29 de Out).
+      const int de = visible.indexOf(" de ");
+      if (de >= 0)
+        visible = visible.substring(0, de + 4) +
+                  visible.substring(de + 4, de + 7);
+    }
+
+    font20.drawText(gfx, TEXT_X, TEXT_BASELINE, visible,
+                    GxEPD_WHITE, pageTop, pageBottom);
+    if (!wifiConnected)
+      drawWifiOff(gfx, TEXT_X + font20.textWidth(visible) + WIFI_GAP, 16);
   }
 
-  String compactDateHeader(QFontGfx &font, const String &date)
+  String compactDateHeader(const String &date)
   {
     String label = formatDateHeader(date);
-    if (font.textWidth(label) > 245)
+    if (font20.textWidth(label) > 245)
     {
       const int comma = label.indexOf(',');
       if (comma > 3)
@@ -290,7 +407,6 @@ namespace
   }
 
   void drawHabitTile(const Habit &habit, size_t index, const String &todayISO,
-                     QFontGfx &initialsFont, QFontGfx &daysFont,
                      int16_t pageTop, int16_t pageBottom)
   {
     const int16_t x = TILE_X + (index % 3) * TILE_STEP_X;
@@ -310,13 +426,13 @@ namespace
     {
       // Enquanto nao houver icone enviado pelo app, usa a inicial com nossa QFNT.
       // Nao usa fonte de emergencia nem elimina acentos.
-      drawCenteredText(initialsFont, firstUtf8Character(habit.name),
+      drawCenteredText(font24, firstUtf8Character(habit.name),
                        x, TILE_W, y + 49, GxEPD_LIGHTGREY,
                        pageTop, pageBottom);
     }
 
     const String age = formatLastCompletion(habit.lastCompletedDate, todayISO);
-    drawCenteredText(daysFont, age, x, TILE_W, y + 82,
+    drawCenteredText(font16, age, x, TILE_W, y + 82,
                      GxEPD_LIGHTGREY, pageTop, pageBottom);
   }
 
@@ -333,7 +449,8 @@ namespace
 
   String compactCondition(const WeatherData &w)
   {
-    return String(WeatherManager::conditionName(w.currentCode));
+    return w.currentDescription[0] ? String(w.currentDescription)
+                                   : String(WeatherManager::conditionName(w.currentCode));
   }
 
   String compactForecastDay(const WeatherDay &day)
@@ -349,7 +466,9 @@ namespace
   String nextRainLabel(const WeatherData &w)
   {
     if (!w.hasNextRain || strlen(w.nextRainTime) < 16)
-      return "Sem chuva";
+      return "-";
+    if (w.rainNow)
+      return "";
     const String iso(w.nextRainTime);
     // A data da primeira previsao diaria e hoje.
     if (w.dayCount && iso.substring(0, 10) == String(w.days[0].date))
@@ -367,25 +486,218 @@ namespace
                   baseline, value, background, top, bottom);
   }
 
-  void drawCompactWeather(Adafruit_GFX &gfx, const WeatherData *weather,
-                          Icons &icons, QFontGfx &f14,
-                          QFontGfx &f20, QFontGfx &f24, QFontGfx &f32,
+  // --------------------------------------------------------------------------
+  // INDICADORES: VALORES DEMONSTRATIVOS para testar o layout.
+  // Os sensores, passos, agua e tempo de tela AINDA NAO sao lidos de uma API.
+  // Quando integrar os dados, substituir apenas os valores deste bloco.
+  // Nao altera os habitos, a previsao ou a imagem-base dos outros cards.
+  // --------------------------------------------------------------------------
+  // struct MetricDemoData
+  // {
+  //   const char *steps = "6.432";
+  //   const char *bike = "12,5";
+  //   const char *water = "1,8";
+  //   uint8_t progress[3] = {64, 63, 60};
+  //   uint8_t phoneHours = 2, phoneMinutes = 15;
+  //   uint8_t pcHours = 3, pcMinutes = 40;
+  //   uint8_t tvHours = 0, tvMinutes = 55;
+  //   const char *temperature = "24,3°";
+  //   const char *humidity = "52";
+  //   const char *co2 = "620";
+  //   const char *lux = "320";
+  //   const char *pm25 = "8";
+  //   const char *noise = "42";
+  // };
+
+  struct MetricDemoData
+  {
+    const char *steps = "-";
+    const char *bike = "-";
+    const char *water = "-";
+    uint8_t progress[3] = {0, 0, 0};
+    uint8_t phoneHours = 0, phoneMinutes = 0;
+    uint8_t pcHours = 0, pcMinutes = 0;
+    uint8_t tvHours = 0, tvMinutes = 0;
+    const char *temperature = "-°";
+    const char *humidity = "-";
+    const char *co2 = "-";
+    const char *lux = "-";
+    const char *pm25 = "-";
+    const char *noise = "-";
+  };
+
+  // Unidades fisicas usam fonte 14, numeros usam 20; apenas '%' pode ser 20.
+  void drawValueUnit(Adafruit_GFX &gfx,
+                     const String &value, const String &unit,
+                     int16_t x, int16_t w, int16_t baseline,
+                     int16_t top, int16_t bottom, bool fullPercent = false)
+  {
+    QFontGfx &uf = fullPercent ? font20 : font14;
+    const int16_t gap = unit.isEmpty() ? 0 : (fullPercent ? 0 : 2);
+    const int16_t wholeW = font20.textWidth(value) + gap + uf.textWidth(unit);
+    int16_t pos = x + (w - wholeW) / 2;
+    font20.drawText(gfx, pos, baseline, value, GxEPD_WHITE, top, bottom);
+    pos += font20.textWidth(value) + gap;
+    if (!unit.isEmpty())
+      uf.drawText(gfx, pos, baseline, unit, GxEPD_WHITE, top, bottom);
+  }
+
+  // Formato 2h15m: h/m sempre menores que os digitos, na MESMA linha.
+  void drawDuration(Adafruit_GFX &gfx,
+                    uint8_t hours, uint8_t minutes, int16_t x, int16_t w,
+                    int16_t baseline, int16_t top, int16_t bottom)
+  {
+    const String first = hours ? String(hours) : String(minutes);
+    const String firstUnit = hours ? "h" : "min";
+    const String last = hours ? String(minutes) : String();
+    const String lastUnit = hours ? String("m") : String();
+    const int16_t wholeW = font20.textWidth(first) + font14.textWidth(firstUnit) +
+                           font20.textWidth(last) + font14.textWidth(lastUnit);
+    int16_t px = x + (w - wholeW) / 2;
+    font20.drawText(gfx, px, baseline, first, GxEPD_WHITE, top, bottom);
+    px += font20.textWidth(first);
+    font14.drawText(gfx, px, baseline, firstUnit, GxEPD_WHITE, top, bottom);
+    px += font14.textWidth(firstUnit);
+    if (hours)
+    {
+      font20.drawText(gfx, px, baseline, last, GxEPD_WHITE, top, bottom);
+      px += font20.textWidth(last);
+      font14.drawText(gfx, px, baseline, lastUnit, GxEPD_WHITE, top, bottom);
+    }
+  }
+
+  void drawDemoIndicators(Adafruit_GFX &gfx, Icons &icons,
                           int16_t top, int16_t bottom)
+  {
+    const MetricDemoData m;
+    const uint16_t actIds[3] = {313, 312, 311};
+    const char *actNames[3] = {"Passos", "Bicicleta", "Água"};
+    const char *actValues[3] = {m.steps, m.bike, m.water};
+    const char *actUnits[3] = {"", "km", "L"};
+
+    // Atividades: 3 colunas com barras de progresso, sem textos de metas.
+    for (int c = 0; c < 3; ++c)
+    {
+      const int16_t x = ACT_TILE_X + c * ACT_TILE_STEP;
+      const int16_t y = ACT_TOP_Y;
+      if (y >= bottom || y + ACT_TOP_H <= top)
+        continue;
+      icons.draw(gfx, actIds[c], x + (ACT_TILE_W - 48) / 2, y + 5,
+                 48, 48, top, bottom);
+      const String label(actNames[c]);
+      font14.drawText(gfx, x + (ACT_TILE_W - font14.textWidth(label)) / 2,
+                      y + 68, label, GxEPD_WHITE, top, bottom);
+      drawValueUnit(gfx, actValues[c], actUnits[c],
+                    x + 2, ACT_TILE_W - 4, y + 90, top, bottom);
+      // Fundo do progresso = cinza claro; preenchimento = cinza escuro.
+      gfx.fillRoundRect(x + (ACT_TILE_W - 66) / 2, y + 99, 66, 7, 3, GxEPD_LIGHTGREY);
+      const int16_t fill = (66 * m.progress[c]) / 100;
+      if (fill > 0)
+        gfx.fillRoundRect(x + (ACT_TILE_W - 66) / 2, y + 99, fill, 7, 3, GxEPD_DARKGREY);
+      const String percent = String(m.progress[c]) + "%";
+      font14.drawText(gfx, x + (ACT_TILE_W - font14.textWidth(percent)) / 2,
+                      y + 120, percent, GxEPD_WHITE, top, bottom);
+    }
+
+    // Tempo de tela: 3 mini-cards inferiores, sem titulos nos cards principais.
+    const uint16_t screenIds[3] = {314, 315, 317};
+    const char *screenNames[3] = {"Celular", "PC", "TV"};
+    const uint8_t hours[3] = {m.phoneHours, m.pcHours, m.tvHours};
+    const uint8_t minutes[3] = {m.phoneMinutes, m.pcMinutes, m.tvMinutes};
+    for (int c = 0; c < 3; ++c)
+    {
+      const int16_t x = ACT_TILE_X + c * ACT_TILE_STEP;
+      const int16_t y = ACT_BOTTOM_Y;
+      if (y >= bottom || y + ACT_BOTTOM_H <= top)
+        continue;
+      icons.draw(gfx, screenIds[c], x + (ACT_TILE_W - 48) / 2, y + 7,
+                 48, 48, top, bottom);
+      const String label(screenNames[c]);
+      font14.drawText(gfx, x + (ACT_TILE_W - font14.textWidth(label)) / 2,
+                      y + 73, label, GxEPD_WHITE, top, bottom);
+      drawDuration(gfx, hours[c], minutes[c],
+                   x + 2, ACT_TILE_W - 4, y + 96, top, bottom);
+    }
+
+    // Sensores: 2 colunas x 3 linhas. Sem rotulos; apenas icone centralizado + valor.
+    const uint16_t sensorIds[6] = {304, 305, 306, 307, 308, 309};
+    const char *sensorValues[6] = {m.temperature, m.humidity, m.co2,
+                                   m.lux, m.pm25, m.noise};
+    const char *sensorUnits[6] = {"", "%", "ppm", "lx", "µg/m³", "dB"};
+    for (int i = 0; i < 6; ++i)
+    {
+      const int col = i % 2, row = i / 2;
+      const int16_t x = SENSOR_TILE_X + col * SENSOR_TILE_STEP;
+      const int16_t y = SENSOR_TILE_Y + row * SENSOR_TILE_STEP_Y;
+      if (y >= bottom || y + SENSOR_TILE_H <= top)
+        continue;
+      icons.draw(gfx, sensorIds[i], x + (SENSOR_TILE_W - 48) / 2, y + 4,
+                 48, 48, top, bottom);
+      drawValueUnit(gfx, sensorValues[i], sensorUnits[i],
+                    x + 3, SENSOR_TILE_W - 6, y + 69, top, bottom,
+                    i == 1);
+    }
+  }
+
+  // Qualidade do ar externo (AQI brasileiro), usando dados ja lidos em RAM.
+  // Mesmo estilo vertical da faixa UV: icone, categoria e numero.
+  void drawAirQuality(Adafruit_GFX &gfx, const AirQualityData *airQuality,
+                      Icons &icons, int16_t top, int16_t bottom)
+  {
+    if (!airQuality || airQuality->brazilAqi < 0)
+      return;
+
+    // ID 322: icone escolhido para qualidade do ar (30x30).
+    icons.draw(gfx, 322, 692, 26, 30, 30, top, bottom);
+
+    // Ex.: "N1 – Boa" -> "Boa". Estados maiores usam abreviacao curta.
+    String category = "AQI";
+    const String raw(airQuality->category);
+    if (raw.startsWith("N1"))
+      category = "Boa";
+    else if (raw.startsWith("N2"))
+      category = "Mod.";
+    else if (raw.startsWith("N3"))
+      category = "Ruim";
+    else if (raw.startsWith("N4"))
+      category = "M. ruim";
+    else if (raw.startsWith("N5"))
+      category = "Péss.";
+
+    font14.drawText(gfx, 736, 36, category, GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, 736, 71, String(airQuality->brazilAqi),
+                    GxEPD_WHITE, top, bottom);
+  }
+
+  // Quarta celula da segunda faixa: x=688..792, y=91..130.
+  // UPI de gramineas do Google Pollen: indice de 0 a 5.
+  void drawPollen(Adafruit_GFX &gfx, const PollenData *pollen,
+                  Icons &icons, int16_t top, int16_t bottom)
+  {
+    if (!pollen || pollen->grassIndex < 0)
+      return;
+
+    icons.draw(gfx, 321, 698, 95, 30, 30, top, bottom);
+    font14.drawText(gfx, 733, 106, "Pólen", GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, 733, 132, String(pollen->grassIndex) + "/5",
+                    GxEPD_WHITE, top, bottom);
+  }
+
+  void drawCompactWeather(Adafruit_GFX &gfx, const WeatherData *weather,
+                          Icons &icons, int16_t top, int16_t bottom)
   {
     if (!weather)
     {
-      f20.drawText(gfx, 298, 65, "Aguardando previsão do tempo",
-                   GxEPD_WHITE, top, bottom);
       return;
     }
 
     // PRIMEIRA FAIXA (mesma composicao do Photoshop):
-    //   [icone] [21°] [Sens. 24°] | [Max. 29° / Min. 19°] | [UV]
+    //   [icone] [21°] [Sens. 24°] [Max. 29° / Min. 19°] | [UV] | [AQI]
     //           [Pancadas de chuva]
     // A condicao e uma unica linha ABAIXO dos dois conjuntos (temperatura + sens.).
     // Nao existe divisoria entre temperatura atual e sensacao termica.
     icons.draw(gfx, weatherIconId(weather->currentCode, weather->isDay, false),
-               287, 5, 70, 70, top, bottom);
+               281, 9, 70, 70, top, bottom);
 
     // V14: conteudo da faixa superior sobe alguns pixels para equilibrar
     // margens. Temp. principal e grupo Sens./23° tem topo visual alinhado;
@@ -394,54 +706,86 @@ namespace
     // Mantemos a temperatura centralizada na faixa original de 73 px,
     // mas reutilizamos seu X real para o texto inferior.
     const String currentText = weatherDegrees(weather->currentTempC);
-    constexpr int16_t TEMP_AREA_X = 360;
+    constexpr int16_t TEMP_AREA_X = 342;
     constexpr int16_t TEMP_AREA_W = 73;
     const int16_t currentX = TEMP_AREA_X +
-                             (TEMP_AREA_W - f32.textWidth(currentText)) / 2;
-    f32.drawText(gfx, currentX, 43, currentText,
-                 GxEPD_WHITE, top, bottom);
+                             (TEMP_AREA_W - font32.textWidth(currentText)) / 2;
+    font32.drawText(gfx, currentX, 43, currentText,
+                    GxEPD_WHITE, top, bottom);
 
     // 'Sens.' e seu numero usam o MESMO espaco rotulo->valor que Max./Min.
     // Rotulos na mesma linha (baseline=38) e valores na mesma (baseline=44).
-    constexpr int16_t LABEL_VALUE_GAP = 8;
-    constexpr int16_t SENS_X = 435;
+    constexpr int16_t LABEL_VALUE_GAP = 4;
+    constexpr int16_t SENS_X = 414;
     const String sensLabel = "Sens.";
     const String apparentText = weatherDegrees(weather->apparentTempC);
-    f14.drawText(gfx, SENS_X, 31, sensLabel,
-                 GxEPD_WHITE, top, bottom);
-    f24.drawText(gfx, SENS_X + f14.textWidth(sensLabel) + LABEL_VALUE_GAP,
-                 37, apparentText, GxEPD_WHITE, top, bottom);
+    font14.drawText(gfx, SENS_X, 36, sensLabel,
+                    GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, SENS_X + font14.textWidth(sensLabel) + LABEL_VALUE_GAP,
+                    36, apparentText, GxEPD_WHITE, top, bottom);
 
     // Condicao abaixo de temperatura + sensacao, ALINHADA A ESQUERDA
     // com o inicio do numero da temperatura, nunca centralizada.
-    const int16_t conditionWidth = 528 - currentX - 6; // ate a divisoria
+    const int16_t conditionWidth = 498 - currentX - 8; // ate o grupo Max./Min.
     String condition = compactCondition(*weather);
-    if (f14.textWidth(condition) > conditionWidth)
+    if (font14.textWidth(condition) > conditionWidth)
     {
-      if (condition == "Pancadas de chuva")
-        condition = "Pancadas";
-      else if (condition == "Pancadas de neve")
-        condition = "Neve";
-      else if (condition == "Garoa congelante")
-        condition = "Garoa";
-      else if (condition == "Chuva congelante")
-        condition = "Chuva";
-      else if (condition == "Parcialmente nublado")
-        condition = "Parc. nublado";
+      struct ShortCondition
+      {
+        const char *type;
+        const char *text;
+      };
+
+      static const ShortCondition names[] = {
+          {"CLEAR", "Céu limpo"},
+          {"MOSTLY_CLEAR", "Poucas nuvens"},
+          {"PARTLY_CLOUDY", "Parc. nublado"},
+          {"MOSTLY_CLOUDY", "Muito nublado"},
+          {"CLOUDY", "Nublado"},
+          {"WINDY", "Ventando"},
+          {"WIND_AND_RAIN", "Chuva e vento"},
+          {"LIGHT_RAIN", "Chuva fraca"},
+          {"RAIN", "Chuva"},
+          {"HEAVY_RAIN", "Chuva forte"},
+          {"LIGHT_RAIN_SHOWERS", "Pancadas leves"},
+          {"RAIN_SHOWERS", "Pancadas"},
+          {"HEAVY_RAIN_SHOWERS", "Pancadas fortes"},
+          {"CHANCE_OF_SHOWERS", "Poss. de chuva"},
+          {"SCATTERED_SHOWERS", "Chuva isolada"},
+          {"LIGHT_TO_MODERATE_RAIN", "Chuva leve/mod."},
+          {"MODERATE_TO_HEAVY_RAIN", "Chuva mod./forte"},
+          {"RAIN_PERIODICALLY_HEAVY", "Chuva variável"},
+          {"THUNDERSTORM", "Trovoada"},
+          {"THUNDERSHOWER", "Chuva e trovões"},
+          {"LIGHT_THUNDERSTORM_RAIN", "Trovoadas leves"},
+          {"SCATTERED_THUNDERSTORMS", "Trovoadas isoladas"},
+          {"HEAVY_THUNDERSTORM", "Tempestade forte"},
+          {"HAIL", "Granizo"},
+          {"SNOW", "Neve"},
+          {"HEAVY_SNOW", "Neve forte"}};
+
+      for (const auto &entry : names)
+      {
+        if (strcmp(weather->currentType, entry.type) == 0)
+        {
+          condition = entry.text;
+          break;
+        }
+      }
     }
-    if (f14.textWidth(condition) > conditionWidth)
+    if (font14.textWidth(condition) > conditionWidth)
     {
       const String ellipsis = "...";
       while (!condition.isEmpty() &&
-             f14.textWidth(condition + ellipsis) > conditionWidth)
+             font14.textWidth(condition + ellipsis) > conditionWidth)
         condition.remove(condition.length() - 1);
       condition += ellipsis;
     }
-    f14.drawText(gfx, currentX, 75, condition,
-                 GxEPD_WHITE, top, bottom);
+    font14.drawText(gfx, currentX, 70, condition,
+                    GxEPD_WHITE, top, bottom);
 
-    // Maxima e minima: rotulo e valor separados pelos MESMOS 8 px.
-    constexpr int16_t MAX_MIN_X = 539;
+    // Maxima e minima: mantem o espacamento atual entre rotulo e valor.
+    constexpr int16_t MAX_MIN_X = 498;
     const String maxLabel = "Máx.";
     const String minLabel = "Mín.";
     const String maxText = weather->dayCount
@@ -450,27 +794,30 @@ namespace
     const String minText = weather->dayCount
                                ? weatherDegrees(weather->days[0].minC)
                                : String("--");
-    f14.drawText(gfx, MAX_MIN_X, 31, maxLabel, GxEPD_WHITE, top, bottom);
-    f24.drawText(gfx, MAX_MIN_X + f14.textWidth(maxLabel) + LABEL_VALUE_GAP,
-                 37, maxText, GxEPD_WHITE, top, bottom);
-    f14.drawText(gfx, MAX_MIN_X, 69, minLabel, GxEPD_WHITE, top, bottom);
-    f24.drawText(gfx, MAX_MIN_X + f14.textWidth(minLabel) + LABEL_VALUE_GAP,
-                 75, minText, GxEPD_WHITE, top, bottom);
+    font14.drawText(gfx, MAX_MIN_X, 36, maxLabel, GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, MAX_MIN_X + font14.textWidth(maxLabel) + LABEL_VALUE_GAP,
+                    36, maxText, GxEPD_WHITE, top, bottom);
+    font14.drawText(gfx, MAX_MIN_X, 71, minLabel, GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, MAX_MIN_X + font14.textWidth(minLabel) + LABEL_VALUE_GAP + 4,
+                    71, minText, GxEPD_WHITE, top, bottom);
 
     // UV: desenhado nos 48x48 px nativos do PNG/BIN (sem reducao para 30),
     // com rotulo e numero a direita. Assim os tracos e letras 'UV' nao somem.
-    icons.draw(gfx, 303, 645, 18, 48, 48, top, bottom);
-    f14.drawText(gfx, 705, 36, "UV máx.", GxEPD_WHITE, top, bottom);
+    icons.draw(gfx, 303, 575, 18, 48, 48, top, bottom);
+    // Atribuicao exigida pelo Google para exibir dados da Weather API.
+    // Linha superior no bloco UV, sem alterar a geometria dos cards.
+    font14.drawText(gfx, 624, 36, "UV máx.", GxEPD_WHITE, top, bottom);
     const String uvNumber = weather->dayCount && isfinite(weather->days[0].uvMax)
                                 ? String(static_cast<int>(lroundf(weather->days[0].uvMax)))
                                 : String("--");
-    f24.drawText(gfx, 705, 73, uvNumber, GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, 624, 71, uvNumber, GxEPD_WHITE, top, bottom);
 
-    // Segunda faixa: proxima chuva (horario + mm/h + prob.) -> nuvens -> vento.
+    // Segunda faixa: proxima chuva, nuvens e vento; polen e desenhado separadamente.
     const String nextRain = nextRainLabel(*weather);
-    icons.draw(gfx, 318, 287, 94, 34, 34, top, bottom);
-    f14.drawText(gfx, 329, 106, "Próx. chuva", GxEPD_WHITE, top, bottom);
-    f20.drawText(gfx, 329, 132, nextRain, GxEPD_WHITE, top, bottom);
+    icons.draw(gfx, 318, 284, 94, 34, 34, top, bottom);
+    font14.drawText(gfx, 319, 106, weather->rainNow ? "Chuva agora" : "Próx. chuva",
+                    GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, 319, 132, nextRain, GxEPD_WHITE, top, bottom);
     if (weather->hasNextRain)
     {
       const String intensity = isfinite(weather->nextRainMm)
@@ -479,41 +826,41 @@ namespace
       const String chance = weather->nextRainProbabilityPct >= 0
                                 ? String("prob. ") + weather->nextRainProbabilityPct + "%"
                                 : String("prob. --");
-      f14.drawText(gfx, 417, 106, intensity, GxEPD_WHITE, top, bottom);
-      f14.drawText(gfx, 417, 127, chance, GxEPD_WHITE, top, bottom);
+      font14.drawText(gfx, 404, 106, intensity, GxEPD_WHITE, top, bottom);
+      font14.drawText(gfx, 404, 127, chance, GxEPD_WHITE, top, bottom);
     }
 
     // Reutiliza o icone de nublado pequeno (ID 202) do BIN existente.
-    icons.draw(gfx, 202, 506, 93, 37, 37, top, bottom);
-    f14.drawText(gfx, 548, 107, "Nuvens", GxEPD_WHITE, top, bottom);
+    icons.draw(gfx, 202, 480, 93, 37, 37, top, bottom);
+    font14.drawText(gfx, 523, 107, "Nuvens", GxEPD_WHITE, top, bottom);
     const String clouds = isfinite(weather->cloudCoverPct)
                               ? String(static_cast<int>(lroundf(weather->cloudCoverPct))) + "%"
                               : String("--");
-    f20.drawText(gfx, 548, 132, clouds, GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, 523, 132, clouds, GxEPD_WHITE, top, bottom);
 
-    icons.draw(gfx, 302, 637, 96, 30, 30, top, bottom);
-    f14.drawText(gfx, 677, 106, "Vento máx.", GxEPD_WHITE, top, bottom);
+    icons.draw(gfx, 302, 586, 98, 26, 26, top, bottom);
+    font14.drawText(gfx, 614, 106, "Vento máx.", GxEPD_WHITE, top, bottom);
     const String windNumber = weather->dayCount && isfinite(weather->days[0].windMaxKmh)
                                   ? String(static_cast<int>(lroundf(weather->days[0].windMaxKmh)))
                                   : String("--");
-    f24.drawText(gfx, 677, 132, windNumber, GxEPD_WHITE, top, bottom);
+    font20.drawText(gfx, 614, 132, windNumber, GxEPD_WHITE, top, bottom);
     // Mantem o numero grande; somente a unidade fica menor.
-    f14.drawText(gfx, 682 + f24.textWidth(windNumber), 132,
-                 "km/h", GxEPD_WHITE, top, bottom);
+    font14.drawText(gfx, 620 + font20.textWidth(windNumber), 132,
+                    "km/h", GxEPD_WHITE, top, bottom);
 
     // Terceira faixa: proximos cinco dias, sem incluir hoje.
     for (uint8_t i = 1; i < weather->dayCount && i <= 5; ++i)
     {
       const int16_t x = 286 + (i - 1) * 100;
       const WeatherDay &day = weather->days[i];
-      drawWeatherCentered(gfx, f14, compactForecastDay(day), x, 96, 157,
+      drawWeatherCentered(gfx, font14, compactForecastDay(day), x, 96, 157,
                           GxEPD_WHITE, top, bottom);
       icons.draw(gfx, weatherIconId(day.weatherCode, true, true),
                  x, 152, 48, 48, top, bottom);
-      f20.drawText(gfx, x + 54, 183, weatherDegrees(day.maxC),
-                   GxEPD_WHITE, top, bottom);
-      f14.drawText(gfx, x + 54, 203, weatherDegrees(day.minC),
-                   GxEPD_WHITE, top, bottom);
+      font20.drawText(gfx, x + 54, 183, weatherDegrees(day.maxC),
+                      GxEPD_WHITE, top, bottom);
+      font14.drawText(gfx, x + 54, 203, weatherDegrees(day.minC),
+                      GxEPD_WHITE, top, bottom);
     }
   }
 
@@ -531,34 +878,6 @@ static void renderLegacy(const DashboardData &data, const WeatherData *weather, 
     return;
   }
 
-  QFontGfx dateFont;
-  QFontGfx initialsFont;
-  QFontGfx habitDays;
-  QFontGfx weatherSmall;
-  QFontGfx weatherBig;
-  if (!dateFont.begin(LittleFS, FONT_DATE_PATH))
-  {
-    Serial.printf("DISPLAY: fonte QFNT invalida ou ausente: %s\n", FONT_DATE_PATH);
-    return;
-  }
-  if (!initialsFont.begin(LittleFS, FONT_TITLE_PATH))
-  {
-    Serial.printf("DISPLAY: fonte QFNT invalida ou ausente: %s\n", FONT_TITLE_PATH);
-    dateFont.end();
-    return;
-  }
-  if (!habitDays.begin(LittleFS, FONT_HABIT_16_PATH) ||
-      !weatherSmall.begin(LittleFS, FONT_14_PATH) ||
-      !weatherBig.begin(LittleFS, FONT_32_PATH))
-  {
-    Serial.println("DISPLAY: fonte climatica 14/32 ausente.");
-    habitDays.end();
-    weatherSmall.end();
-    weatherBig.end();
-    initialsFont.end();
-    dateFont.end();
-    return;
-  }
   Icons icons;
   if (!icons.begin())
     Serial.println("ICONS: /icons.bin ausente/invalido (formato WIC2); exibindo so textos.");
@@ -573,10 +892,10 @@ static void renderLegacy(const DashboardData &data, const WeatherData *weather, 
   const String dateText = formatDateHeader(data.todayISO);
   Serial.print("DISPLAY: cabecalho = ");
   Serial.println(dateText.isEmpty() ? "DATA INDISPONIVEL" : dateText);
-  if (!dateText.isEmpty() && dateFont.textWidth(dateText) > 245)
+  if (!dateText.isEmpty() && font20.textWidth(dateText) > 245)
   {
     Serial.printf("DISPLAY: aviso - cabecalho com %d pixels (limite 245).\n",
-                  dateFont.textWidth(dateText));
+                  font20.textWidth(dateText));
   }
 
   int16_t pageTop = 0;
@@ -585,17 +904,19 @@ static void renderLegacy(const DashboardData &data, const WeatherData *weather, 
   {
     const int16_t pageBottom = std::min<int16_t>(pageTop + PAGE_HEIGHT,
                                                  SCREEN_HEIGHT);
-    drawEmptyPanels();
-    drawNetworkDateHeader(display, dateFont, data.todayISO, wifiConnected, pageTop, pageBottom);
-    drawCompactWeather(display, weather, icons, weatherSmall,
-                       dateFont, initialsFont, weatherBig, pageTop, pageBottom);
+    drawBaseLayout(display);
+    drawNetworkDateHeader(display, icons, data.todayISO, wifiConnected, pageTop, pageBottom);
+    drawCompactWeather(display, weather, icons, pageTop, pageBottom);
+    drawAirQuality(display, data.airQuality, icons, pageTop, pageBottom);
+    drawPollen(display, data.pollen, icons, pageTop, pageBottom);
+    drawDemoIndicators(display, icons, pageTop, pageBottom);
     if (data.habits)
     {
       const size_t count = std::min<size_t>(data.habits->size(), MAX_VISIBLE_HABITS);
       for (size_t i = 0; i < count; ++i)
       {
         drawHabitTile((*data.habits)[i], i, data.todayISO,
-                      initialsFont, habitDays, pageTop, pageBottom);
+                      pageTop, pageBottom);
       }
     }
     pageTop += PAGE_HEIGHT;
@@ -603,11 +924,6 @@ static void renderLegacy(const DashboardData &data, const WeatherData *weather, 
 
   display.epd2.hibernate();
   icons.end();
-  weatherBig.end();
-  weatherSmall.end();
-  habitDays.end();
-  initialsFont.end();
-  dateFont.end();
   Serial.printf("DISPLAY: concluido. Heap livre: %u bytes\n", ESP.getFreeHeap());
 }
 
@@ -713,7 +1029,7 @@ namespace
   uint32_t staticSignature(const DashboardData &data)
   {
     uint32_t h = 2166136261UL;
-    h = addString(h, "EinkDash-base-v17-wifi-dynamic-header");
+    h = addString(h, "EinkDash-base-v33");
     h = addString(h, data.todayISO);
     const size_t count = data.habits ? std::min<size_t>(data.habits->size(), MAX_VISIBLE_HABITS) : 0;
     uint8_t n = static_cast<uint8_t>(count);
@@ -732,33 +1048,8 @@ namespace
     return h;
   }
 
-  void drawBaseLayout(PageCanvas &gfx)
-  {
-    gfx.fillScreen(GxEPD_DARKGREY);
-    gfx.fillRoundRect(8, 8, 262, 40, 7, GxEPD_WHITE);
-    gfx.fillRoundRect(HABITS_PANEL_X, HABITS_PANEL_Y,
-                      HABITS_PANEL_W, HABITS_PANEL_H, 7, GxEPD_WHITE);
-    gfx.fillRoundRect(278, 8, 514, 202, 7, GxEPD_WHITE);
-    gfx.fillRoundRect(278, 218, 264, 254, 7, GxEPD_WHITE);
-    gfx.fillRoundRect(550, 218, 242, 254, 7, GxEPD_WHITE);
-
-    // Mesmas tres faixas do renderizador legado; sem bordas internas.
-    // Separadores conforme mockup: clima / sensacao / max-min / UV.
-    // Condicao atual e Sens. dividem uma area, sem linha entre elas.
-    // Divisorias apenas antes de max/min e UV.
-    gfx.drawFastVLine(528, 20, 58, GxEPD_LIGHTGREY);
-    gfx.drawFastVLine(638, 20, 58, GxEPD_LIGHTGREY);
-    gfx.drawFastHLine(286, 84, 498, GxEPD_DARKGREY);
-    // Segunda faixa: chuva + intensidade | nuvens | vento.
-    gfx.drawFastVLine(502, 91, 39, GxEPD_LIGHTGREY);
-    gfx.drawFastVLine(630, 91, 39, GxEPD_LIGHTGREY);
-    gfx.drawFastHLine(286, 137, 498, GxEPD_DARKGREY);
-    for (int col = 1; col < 5; ++col)
-      gfx.drawFastVLine(286 + col * 100 - 4, 146, 57, GxEPD_LIGHTGREY);
-  }
-
   void drawBaseHabit(PageCanvas &gfx, const Habit &habit, size_t i,
-                     QFontGfx &initials, int16_t top, int16_t bottom)
+                     int16_t top, int16_t bottom)
   {
     const int16_t x = TILE_X + (i % 3) * TILE_STEP_X;
     const int16_t y = TILE_Y + (i / 3) * TILE_STEP_Y;
@@ -774,25 +1065,16 @@ namespace
     else
     {
       const String initial = firstUtf8Character(habit.name);
-      const int16_t posX = x + (TILE_W - initials.textWidth(initial)) / 2;
-      initials.drawText(gfx, posX, y + 49, initial, GxEPD_LIGHTGREY, top, bottom);
+      const int16_t posX = x + (TILE_W - font24.textWidth(initial)) / 2;
+      font24.drawText(gfx, posX, y + 49, initial, GxEPD_LIGHTGREY, top, bottom);
     }
     // A linha de "Hoje" / "Xd" fica VAZIA na memoria Flash.
   }
 
   bool createBase(const DashboardData &data, uint32_t key)
   {
-    QFontGfx initials;
-    if (!initials.begin(LittleFS, FONT_TITLE_PATH))
-    {
-      Serial.println("FLASH: fonte dos icones ausente. Cache cancelado.");
-      return false;
-    }
     if (!flash.startWrite(key))
-    {
-      initials.end();
       return false;
-    }
     bool ok = true;
     for (int16_t y = 0; y < HEIGHT; y += STRIPE)
     {
@@ -803,7 +1085,7 @@ namespace
       {
         const size_t count = std::min<size_t>(data.habits->size(), MAX_VISIBLE_HABITS);
         for (size_t i = 0; i < count; ++i)
-          drawBaseHabit(canvas, (*data.habits)[i], i, initials, y, y + rows);
+          drawBaseHabit(canvas, (*data.habits)[i], i, y, y + rows);
       }
       const uint32_t offset = uint32_t(y) * (WIDTH / 4);
       if (!flash.writeChunk(offset, canvas.bytes(), size_t(rows) * WIDTH / 4))
@@ -815,13 +1097,12 @@ namespace
     }
     if (ok)
       ok = flash.finishWrite();
-    initials.end();
     if (ok)
       Serial.println("FLASH: imagem-base de 96.000 bytes salva/verificada.");
     return ok;
   }
 
-  void drawDynamicAges(const DashboardData &data, QFontGfx &font,
+  void drawDynamicAges(const DashboardData &data,
                        int16_t top, int16_t bottom)
   {
     if (!data.habits)
@@ -836,9 +1117,9 @@ namespace
       if (y + 88 < top || y + 52 >= bottom)
         continue;
       const String value = formatLastCompletion((*data.habits)[i].lastCompletedDate, data.todayISO);
-      const int16_t textX = x + (TILE_W - font.textWidth(value)) / 2;
-      font.drawText(canvas, textX, y + 82, value,
-                    GxEPD_LIGHTGREY, top, bottom);
+      const int16_t textX = x + (TILE_W - font16.textWidth(value)) / 2;
+      font16.drawText(canvas, textX, y + 82, value,
+                      GxEPD_LIGHTGREY, top, bottom);
     }
   }
 
@@ -866,28 +1147,6 @@ namespace
       Serial.println("FLASH: cache valido, reaproveitando imagem-base.");
     }
 
-    QFontGfx dateFont;
-    QFontGfx daysFont;
-    QFontGfx weatherSmall;
-    QFontGfx weatherBody;
-    QFontGfx weatherValue;
-    QFontGfx weatherBig;
-    if (!dateFont.begin(LittleFS, FONT_DATE_PATH) ||
-        !daysFont.begin(LittleFS, FONT_HABIT_16_PATH) ||
-        !weatherSmall.begin(LittleFS, FONT_14_PATH) ||
-        !weatherBody.begin(LittleFS, FONT_BODY_PATH) ||
-        !weatherValue.begin(LittleFS, FONT_TITLE_PATH) ||
-        !weatherBig.begin(LittleFS, FONT_32_PATH))
-    {
-      Serial.println("FLASH: QFNT InterDisplay 14/16/20/24/32 ausente.");
-      dateFont.end();
-      daysFont.end();
-      weatherSmall.end();
-      weatherBody.end();
-      weatherValue.end();
-      weatherBig.end();
-      return false;
-    }
     Icons icons;
     if (!icons.begin())
       Serial.println("ICONS: /icons.bin ausente/invalido (formato WIC2). Exibindo textos.");
@@ -912,11 +1171,12 @@ namespace
       }
       readMs += millis() - t;
       t = millis();
-      drawNetworkDateHeader(canvas, dateFont, data.todayISO, wifiConnected, y, y + rows);
-      drawDynamicAges(data, daysFont, y, y + rows);
-      drawCompactWeather(canvas, weather, icons,
-                         weatherSmall, weatherBody, weatherValue, weatherBig,
-                         y, y + rows);
+      drawNetworkDateHeader(canvas, icons, data.todayISO, wifiConnected, y, y + rows);
+      drawDynamicAges(data, y, y + rows);
+      drawCompactWeather(canvas, weather, icons, y, y + rows);
+      drawAirQuality(canvas, data.airQuality, icons, y, y + rows);
+      drawPollen(canvas, data.pollen, icons, y, y + rows);
+      drawDemoIndicators(canvas, icons, y, y + rows);
       composeMs += millis() - t;
       t = millis();
       display.writeImage_4G(canvas.bytes(), 2, 0, y, WIDTH, rows);
@@ -931,12 +1191,6 @@ namespace
     }
     display.epd2.hibernate();
     icons.end();
-    weatherBig.end();
-    weatherValue.end();
-    weatherBody.end();
-    weatherSmall.end();
-    daysFont.end();
-    dateFont.end();
     Serial.printf("DISPLAY FLASH PERF: leitura=%lu ms; textos=%lu ms; transferencia=%lu ms; refresh=%lu ms; TOTAL=%lu ms; heap=%u\n",
                   (unsigned long)readMs, (unsigned long)composeMs,
                   (unsigned long)transferMs, (unsigned long)refreshMs,
@@ -950,19 +1204,32 @@ namespace
 
 void DisplayManager::render(const DashboardData &data)
 {
-  // O WeatherManager so modifica seus dados no loop(). O ponteiro e estavel,
-  // inclusive quando o touch dispara um redraw local de habitos.
-  const WeatherData *weather = _weather && _weather->hasData() ? &_weather->data() : nullptr;
-  if (renderFlash(data, weather, _wifiConnected))
+  // Todas as fontes sao abertas uma unica vez e ficam disponiveis
+  // tanto na geracao do cache quanto nos dois caminhos de renderizacao.
+  if (!LittleFS.begin(false))
+  {
+    Serial.println("DISPLAY: LittleFS indisponivel; renderizacao cancelada.");
     return;
-  Serial.println("DISPLAY: W25Q16 indisponivel. Usando renderizador anterior, sem gravar na Flash.");
-  renderLegacy(data, weather, _wifiConnected);
+  }
+  if (!beginFonts())
+    return;
+
+  const WeatherData *weather = data.weather;
+  if (!renderFlash(data, weather, _wifiConnected))
+  {
+    Serial.println("DISPLAY: W25Q16 indisponivel. Usando renderizador anterior, sem gravar na Flash.");
+    renderLegacy(data, weather, _wifiConnected);
+  }
+  endFonts();
 }
 
-void DisplayManager::showHabits(const std::vector<Habit> &habits)
+void DisplayManager::show(
+    const std::vector<Habit> &habits,
+    const WeatherData *weather)
 {
   DashboardData data;
   data.habits = &habits;
+  data.weather = weather;
   render(data);
 }
 

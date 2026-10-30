@@ -164,6 +164,25 @@
 			"height": 48
 		},
 		{ "id": 317, "file": "tv_screen_time.png", "width": 48, "height": 48 },
-		{ "id": 318, "file": "umbrella.png", "width": 48, "height": 48 }
+		{ "id": 318, "file": "umbrella.png", "width": 48, "height": 48 },
+		{ "id": 319, "file": "calendar.png", "width": 48, "height": 48 },
+		{
+			"id": 320,
+			"file": "calendar_verysmall.png",
+			"width": 24,
+			"height": 24
+		},
+		{
+			"id": 321,
+			"file": "polen.png",
+			"width": 48,
+			"height": 48
+		},
+		{
+			"id": 322,
+			"file": "airquality.png",
+			"width": 48,
+			"height": 48
+		}
 	]
 }
